@@ -13,9 +13,10 @@
 --   2. Handles NULL / Missing Country:
 --      Strictly filters out NULL and 'UNKNOWN' countries so invalid records never
 --      create malformed tables (those records remain safely in STG_MEMBERS_REJECTED).
---   3. Latest Record Wins Rule:
---      When a member moves countries (e.g. IND -> USA), ROW_NUMBER OVER LOAD_TS DESC
---      picks their current country. They are routed ONLY to that country's table.
+--   3. Country Migration & SCD Type 2 Tracking (IS_ACTIVE & END_DATE):
+--      When a member moves countries (e.g. IND -> USA):
+--        - In the previous country (IND): IS_ACTIVE = 0 and END_DATE = date of move
+--        - In the current country (USA):  IS_ACTIVE = 1 and END_DATE = NULL
 --   4. Fresh Business Attributes:
 --      AGE and STALE_MEMBER are recomputed fresh against CURRENT_DATE() during load.
 -- =============================================================================
@@ -57,26 +58,28 @@ BEGIN
             AGENT_NAME          VARCHAR(100),
             STATE               VARCHAR(50),
             COUNTRY             VARCHAR(10),
-            IS_ACTIVE           VARCHAR(1),
+            IS_ACTIVE           NUMBER(1)       COMMENT ''1 if currently active in this country, 0 if moved to another country'',
             MEMBER_TYPE         VARCHAR(1),
+            START_DATE          DATE            COMMENT ''Date member became active in this country'',
+            END_DATE            DATE            COMMENT ''Date member moved away; NULL if currently active'',
             SOURCE_FILE         VARCHAR(500),
             BATCH_ID            VARCHAR(50),
             STG_LOAD_TS         TIMESTAMP_NTZ   DEFAULT CURRENT_TIMESTAMP()
         ) CLUSTER BY (MEMBER_ID)
-        COMMENT = ''Silver: current state of members for country ' || v_country || ' (created dynamically)''';
+        COMMENT = ''Silver: members for country ' || v_country || ' with migration tracking (1=active, 0=moved)''';
         EXECUTE IMMEDIATE v_sql;
 
         -- Step 2: Clear country table for fresh idempotent rebuild from full history
         v_sql := 'TRUNCATE TABLE STG.STG_MEMBERS_' || v_country;
         EXECUTE IMMEDIATE v_sql;
 
-        -- Step 3: Insert members whose latest valid profile belongs to this country
+        -- Step 3: Insert members: 1 in current country (END_DATE=NULL), 0 in previous country (END_DATE=move date)
         v_sql := 'INSERT INTO STG.STG_MEMBERS_' || v_country || ' (
             MEMBER_ID, MEMBER_NAME, TIER_CODE, DOB, ENROLLMENT_DATE, LAST_FLIGHT_DATE,
             AGE, STALE_MEMBER, AGENT_NAME, STATE, COUNTRY, IS_ACTIVE, MEMBER_TYPE,
-            SOURCE_FILE, BATCH_ID
+            START_DATE, END_DATE, SOURCE_FILE, BATCH_ID
         )
-        WITH latest_valid_members AS (
+        WITH member_history AS (
             SELECT
                 MEMBER_ID,
                 MEMBER_NAME,
@@ -84,9 +87,7 @@ BEGIN
                 DOB,
                 ENROLLMENT_DATE,
                 LAST_FLIGHT_DATE,
-                -- Fresh AGE computation
                 CASE WHEN DOB IS NOT NULL THEN DATEDIFF(''year'', DOB, CURRENT_DATE()) END AS AGE,
-                -- Fresh STALE_MEMBER computation (last flight > 90 days)
                 CASE
                     WHEN LAST_FLIGHT_DATE IS NULL                                THEN ''U''
                     WHEN DATEDIFF(''day'', LAST_FLIGHT_DATE, CURRENT_DATE()) > 90 THEN ''Y''
@@ -95,23 +96,48 @@ BEGIN
                 AGENT_NAME,
                 STATE,
                 COUNTRY,
-                IS_ACTIVE,
                 MEMBER_TYPE,
                 SOURCE_FILE,
                 BATCH_ID,
+                LOAD_TS,
+                -- Business Effective Date handles late-arriving out-of-order member feeds:
+                COALESCE(LAST_FLIGHT_DATE, ENROLLMENT_DATE, LOAD_TS::DATE) AS EFFECTIVE_DATE,
+                -- Date member moved to the next country:
+                LEAD(COALESCE(LAST_FLIGHT_DATE, ENROLLMENT_DATE, LOAD_TS::DATE)) OVER (
+                    PARTITION BY MEMBER_ID 
+                    ORDER BY COALESCE(LAST_FLIGHT_DATE, ENROLLMENT_DATE, LOAD_TS::DATE) ASC, LOAD_TS ASC
+                ) AS NEXT_MOVE_DATE,
+                -- RN_GLOBAL = 1: member''s latest active profile globally by business event time
                 ROW_NUMBER() OVER (
-                    PARTITION BY MEMBER_ID
-                    ORDER BY LOAD_TS DESC       -- latest record across all history wins
-                ) AS RN
+                    PARTITION BY MEMBER_ID 
+                    ORDER BY COALESCE(LAST_FLIGHT_DATE, ENROLLMENT_DATE, LOAD_TS::DATE) DESC, LOAD_TS DESC
+                ) AS RN_GLOBAL,
+                -- RN_COUNTRY = 1: latest record for this specific country
+                ROW_NUMBER() OVER (
+                    PARTITION BY MEMBER_ID, COUNTRY 
+                    ORDER BY COALESCE(LAST_FLIGHT_DATE, ENROLLMENT_DATE, LOAD_TS::DATE) DESC, LOAD_TS DESC
+                ) AS RN_COUNTRY
             FROM STG.STG_MEMBERS
             WHERE IS_VALID = TRUE
+              AND ENROLLMENT_DATE IS NOT NULL
+              AND ENROLLMENT_DATE <= CURRENT_DATE()
+              AND (LAST_FLIGHT_DATE IS NULL OR ENROLLMENT_DATE <= LAST_FLIGHT_DATE)
+              AND (DOB IS NULL OR (DOB <= CURRENT_DATE() AND DATEDIFF(''year'', DOB, CURRENT_DATE()) BETWEEN 0 AND 120))
+              AND MEMBER_ID NOT IN ('''', ''0'', ''00000000'')
         )
         SELECT
             MEMBER_ID, MEMBER_NAME, TIER_CODE, DOB, ENROLLMENT_DATE, LAST_FLIGHT_DATE,
-            AGE, STALE_MEMBER, AGENT_NAME, STATE, COUNTRY, IS_ACTIVE, MEMBER_TYPE,
-            SOURCE_FILE, BATCH_ID
-        FROM latest_valid_members
-        WHERE RN = 1 AND COUNTRY = ''' || v_country || '''';
+            AGE, STALE_MEMBER, AGENT_NAME, STATE, COUNTRY,
+            -- 1 if active in this country, 0 if moved to another country
+            CASE WHEN RN_GLOBAL = 1 THEN 1 ELSE 0 END AS IS_ACTIVE,
+            MEMBER_TYPE,
+            COALESCE(ENROLLMENT_DATE, LOAD_TS::DATE) AS START_DATE,
+            CASE WHEN RN_GLOBAL = 1 THEN NULL ELSE COALESCE(NEXT_MOVE_DATE, CURRENT_DATE()) END AS END_DATE,
+            SOURCE_FILE,
+            BATCH_ID
+        FROM member_history
+        WHERE RN_COUNTRY = 1
+          AND COUNTRY = ''' || v_country || '''';
         EXECUTE IMMEDIATE v_sql;
 
         v_count := v_count + 1;

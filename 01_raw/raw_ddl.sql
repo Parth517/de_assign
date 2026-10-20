@@ -57,8 +57,8 @@ CREATE OR REPLACE FILE FORMAT RAW.FF_PIPE_DELIMITED
 -- -------------------------------------------------
 CREATE OR REPLACE FILE FORMAT RAW.FF_JSON
     TYPE              = 'JSON'
-    STRIP_OUTER_ARRAY = FALSE
-    COMMENT           = 'JSON format for partner airline redemption feed';
+    STRIP_OUTER_ARRAY = TRUE
+    COMMENT           = 'JSON format for partner airline redemption feed (strips outer array)';
 
 
 -- -------------------------------------------------
@@ -66,9 +66,9 @@ CREATE OR REPLACE FILE FORMAT RAW.FF_JSON
 -- -------------------------------------------------
 -- Upload files via: PUT file:///local/path/members.dat @SKYPOINTS_STAGE
 -- For production: replace with external stage on S3 / GCS / Azure Blob
-CREATE OR REPLACE STAGE RAW.SKYPOINTS_STAGE
-    FILE_FORMAT = RAW.FF_PIPE_DELIMITED
-    COMMENT     = 'Internal stage for SkyPoints daily feeds';
+-- CREATE OR REPLACE STAGE RAW.SKYPOINTS_STAGE
+--     FILE_FORMAT = RAW.FF_PIPE_DELIMITED
+--     COMMENT     = 'Internal stage for SkyPoints daily feeds';
 
 
 -- -------------------------------------------------
@@ -89,6 +89,7 @@ CREATE OR REPLACE TABLE RAW.RAW_MEMBERS (
     AGENT_NAME          VARCHAR(100),
     STATE               VARCHAR(50),
     COUNTRY             VARCHAR(10),
+    POST_CODE           VARCHAR(10)     COMMENT 'Post code (5-digit integer per spec, optional)',
     DOB                 VARCHAR(20),
     IS_ACTIVE           VARCHAR(1),
     -- Audit columns
@@ -131,20 +132,25 @@ SELECT $BATCH_ID AS ACTIVE_BATCH_ID;
 -- Before running: PUT file:///local/path/members_<date>.dat @RAW.SKYPOINTS_STAGE;
 COPY INTO RAW.RAW_MEMBERS (
     REC_TYPE, MEMBER_NAME, MEMBER_ID, ENROLLMENT_DATE, LAST_FLIGHT_DATE,
-    TIER_CODE, AGENT_NAME, STATE, COUNTRY, DOB, IS_ACTIVE,
+    TIER_CODE, AGENT_NAME, STATE, COUNTRY, POST_CODE, DOB, IS_ACTIVE,
     SOURCE_FILE, BATCH_ID
 )
 FROM (
     SELECT
-        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+        $1, $2, $3, $4, $5, $6, $7, $8,
+        $9,                                              -- COUNTRY
+        CASE WHEN $12 IS NOT NULL THEN $10 ELSE $12 END, -- POST_CODE (if 12 cols, $10 is Post Code; if 11 cols, NULL)
+        CASE WHEN $12 IS NOT NULL THEN $11 ELSE $10 END, -- DOB
+        CASE WHEN $12 IS NOT NULL THEN $12 ELSE $11 END, -- IS_ACTIVE
         METADATA$FILENAME,   -- Snowflake auto-populates the source file name
         $BATCH_ID            -- dynamic: YYYYMMDD_RRR, set above
     FROM @RAW.SKYPOINTS_STAGE
     -- Pattern matches any flat file in the stage for today's date
-     (PATTERN => '.*members.*\\.(csv|dat|txt)')
+    (PATTERN => '.*members.*\\.(csv|dat|txt)')
 )
 FILE_FORMAT = (FORMAT_NAME = 'RAW.FF_PIPE_DELIMITED')
-ON_ERROR    = 'CONTINUE';   -- log bad rows, do not abort the entire load
+ON_ERROR    = 'CONTINUE'
+FORCE       = TRUE;   -- allow re-loading during testing/re-runs
 
 
 -- 7b. JSON feed load
@@ -159,4 +165,5 @@ FROM (
     (PATTERN => '.*redemptions.*\.json')
 )
 FILE_FORMAT = (FORMAT_NAME = 'RAW.FF_JSON')
-ON_ERROR    = 'CONTINUE';
+ON_ERROR    = 'CONTINUE'
+FORCE       = TRUE;

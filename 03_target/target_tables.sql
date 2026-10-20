@@ -41,14 +41,16 @@ CREATE OR REPLACE TABLE PROD.TABLE_USA (
     AGENT_NAME              VARCHAR(100),
     STATE                   VARCHAR(50),
     COUNTRY                 VARCHAR(10),
-    IS_ACTIVE               VARCHAR(1),
+    IS_ACTIVE               NUMBER(1)       COMMENT '1 if currently active in USA, 0 if moved to another country',
     MEMBER_TYPE             VARCHAR(1),
+    START_DATE              DATE            COMMENT 'Date member became active in USA',
+    END_DATE                DATE            COMMENT 'Date member moved away; NULL if currently active',
     SOURCE_FILE             VARCHAR(500),
     BATCH_ID                VARCHAR(50),
     LOADED_AT               TIMESTAMP_NTZ   DEFAULT CURRENT_TIMESTAMP()
 )
 CLUSTER BY (MEMBER_ID)
-COMMENT = 'Gold: USA members. Full refresh from STG.STG_MEMBERS_USA. No processing here.';
+COMMENT = 'Gold: USA members with migration tracking (1=active, 0=moved).';
 
 
 CREATE OR REPLACE TABLE PROD.TABLE_IND (
@@ -63,14 +65,16 @@ CREATE OR REPLACE TABLE PROD.TABLE_IND (
     AGENT_NAME              VARCHAR(100),
     STATE                   VARCHAR(50),
     COUNTRY                 VARCHAR(10),
-    IS_ACTIVE               VARCHAR(1),
+    IS_ACTIVE               NUMBER(1)       COMMENT '1 if currently active in India, 0 if moved to another country',
     MEMBER_TYPE             VARCHAR(1)      COMMENT 'I=Individual C=Corporate',
+    START_DATE              DATE            COMMENT 'Date member became active in India',
+    END_DATE                DATE            COMMENT 'Date member moved away; NULL if currently active',
     SOURCE_FILE             VARCHAR(500),
     BATCH_ID                VARCHAR(50),
     LOADED_AT               TIMESTAMP_NTZ   DEFAULT CURRENT_TIMESTAMP()
 )
 CLUSTER BY (MEMBER_ID)
-COMMENT = 'Gold: India members. Full refresh from STG.STG_MEMBERS_IND. No processing here.';
+COMMENT = 'Gold: India members with migration tracking (1=active, 0=moved).';
 
 
 CREATE OR REPLACE TABLE PROD.TABLE_AUS (
@@ -85,16 +89,88 @@ CREATE OR REPLACE TABLE PROD.TABLE_AUS (
     AGENT_NAME              VARCHAR(100),
     STATE                   VARCHAR(50),
     COUNTRY                 VARCHAR(10),
-    IS_ACTIVE               VARCHAR(1),
+    IS_ACTIVE               NUMBER(1)       COMMENT '1 if currently active in Australia, 0 if moved to another country',
     MEMBER_TYPE             VARCHAR(1),
+    START_DATE              DATE            COMMENT 'Date member became active in Australia',
+    END_DATE                DATE            COMMENT 'Date member moved away; NULL if currently active',
     SOURCE_FILE             VARCHAR(500),
     BATCH_ID                VARCHAR(50),
     LOADED_AT               TIMESTAMP_NTZ   DEFAULT CURRENT_TIMESTAMP()
 )
 CLUSTER BY (MEMBER_ID)
-COMMENT = 'Gold: Australia members. Full refresh from STG.STG_MEMBERS_AUS. No processing here.';
+COMMENT = 'Gold: Australia members with migration tracking (1=active, 0=moved).';
 
 
+-- =============================================================================
+-- 2. LOAD GOLD — TRUNCATE + INSERT (Full Refresh, No Logic)
+--
+--    Silver guarantees:
+--      - Only IS_VALID = TRUE rows are here
+--      - Exactly 1 row per MEMBER_ID (latest record wins already applied)
+--      - Dates are typed, AGE and STALE_MEMBER are computed
+--      - Country split is already done
+--
+--    So this is literally just: clear the table and copy from Silver.
+-- =============================================================================
+
+-- ── USA ──────────────────────────────────────────────────────────────────────
+TRUNCATE TABLE PROD.TABLE_USA;
+
+INSERT INTO PROD.TABLE_USA (
+    MEMBER_ID, MEMBER_NAME, TIER_CODE, DOB, ENROLLMENT_DATE, LAST_FLIGHT_DATE,
+    AGE, STALE_MEMBER, AGENT_NAME, STATE, COUNTRY, IS_ACTIVE, MEMBER_TYPE,
+    START_DATE, END_DATE, SOURCE_FILE, BATCH_ID
+)
+SELECT
+    MEMBER_ID, MEMBER_NAME, TIER_CODE, DOB, ENROLLMENT_DATE, LAST_FLIGHT_DATE,
+    AGE, STALE_MEMBER, AGENT_NAME, STATE, COUNTRY, IS_ACTIVE, MEMBER_TYPE,
+    START_DATE, END_DATE, SOURCE_FILE, BATCH_ID
+FROM STG.STG_MEMBERS_USA
+WHERE ENROLLMENT_DATE IS NOT NULL
+  AND ENROLLMENT_DATE <= CURRENT_DATE()
+  AND (LAST_FLIGHT_DATE IS NULL OR ENROLLMENT_DATE <= LAST_FLIGHT_DATE)
+  AND (DOB IS NULL OR (DOB <= CURRENT_DATE() AND DATEDIFF('year', DOB, CURRENT_DATE()) BETWEEN 0 AND 120))
+  AND MEMBER_ID NOT IN ('', '0', '00000000');
+
+
+-- ── IND ──────────────────────────────────────────────────────────────────────
+TRUNCATE TABLE PROD.TABLE_IND;
+
+INSERT INTO PROD.TABLE_IND (
+    MEMBER_ID, MEMBER_NAME, TIER_CODE, DOB, ENROLLMENT_DATE, LAST_FLIGHT_DATE,
+    AGE, STALE_MEMBER, AGENT_NAME, STATE, COUNTRY, IS_ACTIVE, MEMBER_TYPE,
+    START_DATE, END_DATE, SOURCE_FILE, BATCH_ID
+)
+SELECT
+    MEMBER_ID, MEMBER_NAME, TIER_CODE, DOB, ENROLLMENT_DATE, LAST_FLIGHT_DATE,
+    AGE, STALE_MEMBER, AGENT_NAME, STATE, COUNTRY, IS_ACTIVE, MEMBER_TYPE,
+    START_DATE, END_DATE, SOURCE_FILE, BATCH_ID
+FROM STG.STG_MEMBERS_IND
+WHERE ENROLLMENT_DATE IS NOT NULL
+  AND ENROLLMENT_DATE <= CURRENT_DATE()
+  AND (LAST_FLIGHT_DATE IS NULL OR ENROLLMENT_DATE <= LAST_FLIGHT_DATE)
+  AND (DOB IS NULL OR (DOB <= CURRENT_DATE() AND DATEDIFF('year', DOB, CURRENT_DATE()) BETWEEN 0 AND 120))
+  AND MEMBER_ID NOT IN ('', '0', '00000000');
+
+
+-- ── AUS ──────────────────────────────────────────────────────────────────────
+TRUNCATE TABLE PROD.TABLE_AUS;
+
+INSERT INTO PROD.TABLE_AUS (
+    MEMBER_ID, MEMBER_NAME, TIER_CODE, DOB, ENROLLMENT_DATE, LAST_FLIGHT_DATE,
+    AGE, STALE_MEMBER, AGENT_NAME, STATE, COUNTRY, IS_ACTIVE, MEMBER_TYPE,
+    START_DATE, END_DATE, SOURCE_FILE, BATCH_ID
+)
+SELECT
+    MEMBER_ID, MEMBER_NAME, TIER_CODE, DOB, ENROLLMENT_DATE, LAST_FLIGHT_DATE,
+    AGE, STALE_MEMBER, AGENT_NAME, STATE, COUNTRY, IS_ACTIVE, MEMBER_TYPE,
+    START_DATE, END_DATE, SOURCE_FILE, BATCH_ID
+FROM STG.STG_MEMBERS_AUS
+WHERE ENROLLMENT_DATE IS NOT NULL
+  AND ENROLLMENT_DATE <= CURRENT_DATE()
+  AND (LAST_FLIGHT_DATE IS NULL OR ENROLLMENT_DATE <= LAST_FLIGHT_DATE)
+  AND (DOB IS NULL OR (DOB <= CURRENT_DATE() AND DATEDIFF('year', DOB, CURRENT_DATE()) BETWEEN 0 AND 120))
+  AND MEMBER_ID NOT IN ('', '0', '00000000');
 
 
 -- =============================================================================
@@ -147,13 +223,15 @@ BEGIN
             AGENT_NAME          VARCHAR(100),
             STATE               VARCHAR(50),
             COUNTRY             VARCHAR(10),
-            IS_ACTIVE           VARCHAR(1),
+            IS_ACTIVE           NUMBER(1)       COMMENT ''1 if currently active in this country, 0 if moved to another country'',
             MEMBER_TYPE         VARCHAR(1),
+            START_DATE          DATE            COMMENT ''Date member became active in this country'',
+            END_DATE            DATE            COMMENT ''Date member moved away; NULL if currently active'',
             SOURCE_FILE         VARCHAR(500),
             BATCH_ID            VARCHAR(50),
             LOADED_AT           TIMESTAMP_NTZ   DEFAULT CURRENT_TIMESTAMP()
         ) CLUSTER BY (MEMBER_ID)
-        COMMENT = ''Gold: per-country table for ' || v_country || ' (created dynamically)''';
+        COMMENT = ''Gold: per-country table for ' || v_country || ' with migration tracking (1=active, 0=moved)''';
         EXECUTE IMMEDIATE v_sql;
 
         -- Step 2: Clear existing records in this country table for fresh refresh
@@ -164,13 +242,18 @@ BEGIN
         v_sql := 'INSERT INTO PROD.TABLE_' || v_country || ' (
             MEMBER_ID, MEMBER_NAME, TIER_CODE, DOB, ENROLLMENT_DATE, LAST_FLIGHT_DATE,
             AGE, STALE_MEMBER, AGENT_NAME, STATE, COUNTRY, IS_ACTIVE, MEMBER_TYPE,
-            SOURCE_FILE, BATCH_ID
+            START_DATE, END_DATE, SOURCE_FILE, BATCH_ID
         )
         SELECT
             MEMBER_ID, MEMBER_NAME, TIER_CODE, DOB, ENROLLMENT_DATE, LAST_FLIGHT_DATE,
             AGE, STALE_MEMBER, AGENT_NAME, STATE, COUNTRY, IS_ACTIVE, MEMBER_TYPE,
-            SOURCE_FILE, BATCH_ID
-        FROM STG.STG_MEMBERS_' || v_country;
+            START_DATE, END_DATE, SOURCE_FILE, BATCH_ID
+        FROM STG.STG_MEMBERS_' || v_country || '
+        WHERE ENROLLMENT_DATE IS NOT NULL
+          AND ENROLLMENT_DATE <= CURRENT_DATE()
+          AND (LAST_FLIGHT_DATE IS NULL OR ENROLLMENT_DATE <= LAST_FLIGHT_DATE)
+          AND (DOB IS NULL OR (DOB <= CURRENT_DATE() AND DATEDIFF(''year'', DOB, CURRENT_DATE()) BETWEEN 0 AND 120))
+          AND MEMBER_ID NOT IN ('''', ''0'', ''00000000'')';
         EXECUTE IMMEDIATE v_sql;
 
         v_count := v_count + 1;
