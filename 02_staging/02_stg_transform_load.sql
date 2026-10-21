@@ -61,13 +61,6 @@ country_lookup AS (
     SELECT DISTINCT UPPER(TRIM(ALIAS)) AS ALIAS, UPPER(TRIM(ISO_ALPHA3)) AS ISO_ALPHA3
     FROM STG.REF_COUNTRY_LOOKUP
 ),
-country_canonical AS (
-    SELECT DISTINCT 
-        UPPER(TRIM(ISO_ALPHA3))   AS ISO_ALPHA3, 
-        UPPER(TRIM(COUNTRY_NAME)) AS CANONICAL_NAME
-    FROM STG.REF_COUNTRY_LOOKUP
-    WHERE COUNTRY_NAME IS NOT NULL
-)
 raw_normalized AS (
     SELECT
         TRIM(r.MEMBER_ID)                               AS MEMBER_ID,
@@ -75,13 +68,11 @@ raw_normalized AS (
         UPPER(TRIM(r.TIER_CODE))                        AS TIER_CODE,
         TRIM(r.AGENT_NAME)                              AS AGENT_NAME,
         TRIM(r.STATE)                                   AS STATE,
-        -- Pragmatic dynamic country resolution via STG.REF_COUNTRY_LOOKUP:
-        -- 1. Exact alias match from lookup table (e.g. 'Indi' -> 'IND', 'Aust' -> 'AUS', 'US' -> 'USA')
-        -- 2. Prefix match against canonical country name if length >= 3 (e.g. 'Canad' -> 'Canada' -> 'CAN')
-        -- 3. Direct 3-letter ISO code if already valid; otherwise NULL (triggers MISSING_COUNTRY rejection)
+        -- Dynamic country resolution via STG.REF_COUNTRY_LOOKUP:
+        -- 1. Exact alias match from lookup table (e.g. 'Indi', 'India', 'Bharat' -> 'IND')
+        -- 2. Direct 3-letter ISO code if already valid; otherwise NULL (triggers MISSING_COUNTRY rejection)
         COALESCE(
             lkp.ISO_ALPHA3,
-            pfx.ISO_ALPHA3,
             CASE WHEN LENGTH(TRIM(r.COUNTRY)) = 3 THEN UPPER(TRIM(r.COUNTRY)) END
         )                                               AS COUNTRY,
         TRY_TO_NUMBER(TRIM(r.POST_CODE))                AS POST_CODE,
@@ -168,14 +159,6 @@ raw_normalized AS (
     FROM raw_filtered r
     LEFT JOIN country_lookup lkp
         ON UPPER(TRIM(r.COUNTRY)) = lkp.ALIAS
-    LEFT JOIN country_canonical pfx
-        ON lkp.ISO_ALPHA3 IS NULL
-       AND r.COUNTRY IS NOT NULL
-       AND LENGTH(TRIM(r.COUNTRY)) >= 3
-       AND (
-           STARTSWITH(pfx.CANONICAL_NAME, UPPER(TRIM(r.COUNTRY)))
-           OR STARTSWITH(UPPER(TRIM(r.COUNTRY)), pfx.CANONICAL_NAME)
-       )
 ),
 with_derived AS (
     SELECT
@@ -243,17 +226,10 @@ SELECT
     s.SOURCE_FILE,
     s.BATCH_ID
 FROM STG.STG_MEMBERS s
-LEFT JOIN (
-    SELECT 
-        TRIM(MEMBER_ID) AS MEMBER_ID,
-        TRIM(DOB) AS DOB,
-        TRIM(ENROLLMENT_DATE) AS ENROLLMENT_DATE,
-        TRIM(LAST_FLIGHT_DATE) AS LAST_FLIGHT_DATE,
-        TRIM(POST_CODE) AS POST_CODE
-    FROM RAW.RAW_MEMBERS
-    WHERE UPPER(TRIM(COALESCE(REC_TYPE, 'D'))) NOT IN ('H', 'HEADER')
-    QUALIFY ROW_NUMBER() OVER (PARTITION BY TRIM(MEMBER_ID) ORDER BY COALESCE(LOAD_TS, CURRENT_TIMESTAMP()) DESC) = 1
-) r ON s.MEMBER_ID = r.MEMBER_ID
+LEFT JOIN RAW.RAW_MEMBERS r 
+    ON s.MEMBER_ID = r.MEMBER_ID
+   AND s.BATCH_ID  = r.BATCH_ID
+   AND UPPER(TRIM(COALESCE(r.REC_TYPE, 'D'))) NOT IN ('H', 'HEADER')
 WHERE s.IS_VALID = FALSE;
 
 

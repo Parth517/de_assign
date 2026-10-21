@@ -144,7 +144,7 @@ CREATE TABLE IF NOT EXISTS PROD.FACT_MEMBER_REDEMPTIONS (
     STATE               VARCHAR(50),
     COUNTRY             VARCHAR(10)     COMMENT 'Member canonical 3-letter country',
     POST_CODE           NUMBER(5),
-    MEMBER_IS_ACTIVE    NUMBER(1)       COMMENT '1 if active, 0 if inactive/moved',
+    IS_ACTIVE    NUMBER(1)       COMMENT '1 if active, 0 if inactive/moved',
     -- Audit
     SOURCE_FILE         VARCHAR(500),
     BATCH_ID            VARCHAR(50),
@@ -185,7 +185,7 @@ USING (
         m.STATE,
         m.COUNTRY,
         m.POST_CODE,
-        CASE WHEN m.IS_ACTIVE = 'A' OR m.IS_ACTIVE = '1' THEN 1 ELSE 0 END AS MEMBER_IS_ACTIVE,
+        CASE WHEN m.IS_ACTIVE = 'A' OR m.IS_ACTIVE = '1' THEN 1 ELSE 0 END AS IS_ACTIVE,
         r.SOURCE_FILE,
         r.BATCH_ID
     FROM STG.STG_REDEMPTIONS r
@@ -208,19 +208,19 @@ WHEN MATCHED THEN
         tgt.STATE            = src.STATE,
         tgt.COUNTRY          = src.COUNTRY,
         tgt.POST_CODE        = src.POST_CODE,
-        tgt.MEMBER_IS_ACTIVE = src.MEMBER_IS_ACTIVE,
+        tgt.IS_ACTIVE = src.IS_ACTIVE,
         tgt.BATCH_ID         = src.BATCH_ID,
         tgt.LOADED_AT        = CURRENT_TIMESTAMP()
 WHEN NOT MATCHED THEN
     INSERT (
         TXN_ID, TXN_DATE, FEED_DATE, PARTNER, MILES_REDEEMED, STATUS,
         MEMBER_ID, MEMBER_NAME, TIER_CODE, AGE, STALE_MEMBER, AGENT_NAME,
-        STATE, COUNTRY, POST_CODE, MEMBER_IS_ACTIVE, SOURCE_FILE, BATCH_ID
+        STATE, COUNTRY, POST_CODE, IS_ACTIVE, SOURCE_FILE, BATCH_ID
     )
     VALUES (
         src.TXN_ID, src.TXN_DATE, src.FEED_DATE, src.PARTNER, src.MILES_REDEEMED, src.STATUS,
         src.MEMBER_ID, src.MEMBER_NAME, src.TIER_CODE, src.AGE, src.STALE_MEMBER, src.AGENT_NAME,
-        src.STATE, src.COUNTRY, src.POST_CODE, src.MEMBER_IS_ACTIVE, src.SOURCE_FILE, src.BATCH_ID
+        src.STATE, src.COUNTRY, src.POST_CODE, src.IS_ACTIVE, src.SOURCE_FILE, src.BATCH_ID
     );
 
 

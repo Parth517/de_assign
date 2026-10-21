@@ -215,13 +215,6 @@ country_lookup AS (
     SELECT DISTINCT UPPER(TRIM(ALIAS)) AS ALIAS, UPPER(TRIM(ISO_ALPHA3)) AS ISO_ALPHA3
     FROM STG.REF_COUNTRY_LOOKUP
 ),
-country_canonical AS (
-    SELECT DISTINCT 
-        UPPER(TRIM(ISO_ALPHA3))   AS ISO_ALPHA3, 
-        UPPER(TRIM(COUNTRY_NAME)) AS CANONICAL_NAME
-    FROM STG.REF_COUNTRY_LOOKUP
-    WHERE COUNTRY_NAME IS NOT NULL
-)
 raw_normalized AS (
     SELECT
         TRIM(r.MEMBER_ID)                               AS MEMBER_ID,
@@ -229,13 +222,11 @@ raw_normalized AS (
         UPPER(TRIM(r.TIER_CODE))                        AS TIER_CODE,
         TRIM(r.AGENT_NAME)                              AS AGENT_NAME,
         TRIM(r.STATE)                                   AS STATE,
-        -- Pragmatic dynamic country resolution via STG.REF_COUNTRY_LOOKUP:
-        -- 1. Exact alias match from lookup table (e.g. 'Indi' -> 'IND', 'Aust' -> 'AUS', 'US' -> 'USA')
-        -- 2. Prefix match against canonical country name if length >= 3 (e.g. 'Canad' -> 'Canada' -> 'CAN')
-        -- 3. Direct 3-letter ISO code if already valid; otherwise NULL (triggers MISSING_COUNTRY rejection)
+        -- Dynamic country resolution via STG.REF_COUNTRY_LOOKUP:
+        -- 1. Exact alias match from lookup table (e.g. 'Indi', 'India', 'Bharat' -> 'IND')
+        -- 2. Direct 3-letter ISO code if already valid; otherwise NULL (triggers MISSING_COUNTRY rejection)
         COALESCE(
             lkp.ISO_ALPHA3,
-            pfx.ISO_ALPHA3,
             CASE WHEN LENGTH(TRIM(r.COUNTRY)) = 3 THEN UPPER(TRIM(r.COUNTRY)) END
         )                                               AS COUNTRY,
         TRY_TO_NUMBER(TRIM(r.POST_CODE))                AS POST_CODE,
@@ -322,14 +313,6 @@ raw_normalized AS (
     FROM raw_filtered r
     LEFT JOIN country_lookup lkp
         ON UPPER(TRIM(r.COUNTRY)) = lkp.ALIAS
-    LEFT JOIN country_canonical pfx
-        ON lkp.ISO_ALPHA3 IS NULL
-       AND r.COUNTRY IS NOT NULL
-       AND LENGTH(TRIM(r.COUNTRY)) >= 3
-       AND (
-           STARTSWITH(pfx.CANONICAL_NAME, UPPER(TRIM(r.COUNTRY)))
-           OR STARTSWITH(UPPER(TRIM(r.COUNTRY)), pfx.CANONICAL_NAME)
-       )
 ),
 with_derived AS (
     SELECT
@@ -396,17 +379,10 @@ SELECT
     s.SOURCE_FILE,
     s.BATCH_ID
 FROM STG.STG_MEMBERS s
-LEFT JOIN (
-    SELECT 
-        TRIM(MEMBER_ID) AS MEMBER_ID,
-        TRIM(DOB) AS DOB,
-        TRIM(ENROLLMENT_DATE) AS ENROLLMENT_DATE,
-        TRIM(LAST_FLIGHT_DATE) AS LAST_FLIGHT_DATE,
-        TRIM(POST_CODE) AS POST_CODE
-    FROM RAW.RAW_MEMBERS
-    WHERE UPPER(TRIM(COALESCE(REC_TYPE, 'D'))) NOT IN ('H', 'HEADER')
-    QUALIFY ROW_NUMBER() OVER (PARTITION BY TRIM(MEMBER_ID) ORDER BY COALESCE(LOAD_TS, CURRENT_TIMESTAMP()) DESC) = 1
-) r ON s.MEMBER_ID = r.MEMBER_ID
+LEFT JOIN RAW.RAW_MEMBERS r 
+    ON s.MEMBER_ID = r.MEMBER_ID
+   AND s.BATCH_ID  = r.BATCH_ID
+   AND UPPER(TRIM(COALESCE(r.REC_TYPE, 'D'))) NOT IN ('H', 'HEADER')
 WHERE s.IS_VALID = FALSE;
 
 
@@ -677,7 +653,7 @@ CREATE TABLE IF NOT EXISTS PROD.FACT_MEMBER_REDEMPTIONS (
     STATE               VARCHAR(50),
     COUNTRY             VARCHAR(10)     COMMENT 'Member canonical 3-letter country',
     POST_CODE           NUMBER(5),
-    MEMBER_IS_ACTIVE    NUMBER(1)       COMMENT '1 if active, 0 if inactive/moved',
+    IS_ACTIVE    NUMBER(1)       COMMENT '1 if active, 0 if inactive/moved',
     -- Audit
     SOURCE_FILE         VARCHAR(500),
     BATCH_ID            VARCHAR(50),
@@ -717,7 +693,7 @@ USING (
         m.STATE,
         m.COUNTRY,
         m.POST_CODE,
-        CASE WHEN m.IS_ACTIVE = 'A' OR m.IS_ACTIVE = '1' THEN 1 ELSE 0 END AS MEMBER_IS_ACTIVE,
+        CASE WHEN m.IS_ACTIVE = 'A' OR m.IS_ACTIVE = '1' THEN 1 ELSE 0 END AS IS_ACTIVE,
         r.SOURCE_FILE,
         r.BATCH_ID
     FROM STG.STG_REDEMPTIONS r
@@ -740,19 +716,19 @@ WHEN MATCHED THEN
         tgt.STATE            = src.STATE,
         tgt.COUNTRY          = src.COUNTRY,
         tgt.POST_CODE        = src.POST_CODE,
-        tgt.MEMBER_IS_ACTIVE = src.MEMBER_IS_ACTIVE,
+        tgt.IS_ACTIVE = src.IS_ACTIVE,
         tgt.BATCH_ID         = src.BATCH_ID,
         tgt.LOADED_AT        = CURRENT_TIMESTAMP()
 WHEN NOT MATCHED THEN
     INSERT (
         TXN_ID, TXN_DATE, FEED_DATE, PARTNER, MILES_REDEEMED, STATUS,
         MEMBER_ID, MEMBER_NAME, TIER_CODE, AGE, STALE_MEMBER, AGENT_NAME,
-        STATE, COUNTRY, POST_CODE, MEMBER_IS_ACTIVE, SOURCE_FILE, BATCH_ID
+        STATE, COUNTRY, POST_CODE, IS_ACTIVE, SOURCE_FILE, BATCH_ID
     )
     VALUES (
         src.TXN_ID, src.TXN_DATE, src.FEED_DATE, src.PARTNER, src.MILES_REDEEMED, src.STATUS,
         src.MEMBER_ID, src.MEMBER_NAME, src.TIER_CODE, src.AGE, src.STALE_MEMBER, src.AGENT_NAME,
-        src.STATE, src.COUNTRY, src.POST_CODE, src.MEMBER_IS_ACTIVE, src.SOURCE_FILE, src.BATCH_ID
+        src.STATE, src.COUNTRY, src.POST_CODE, src.IS_ACTIVE, src.SOURCE_FILE, src.BATCH_ID
     );
 
 
@@ -813,10 +789,5 @@ AS
 -- ALTER TASK SKYPOINTS_TASK_02_JSON_FLATTEN RESUME;
 -- ALTER TASK SKYPOINTS_TASK_01_RAW_INGEST RESUME;
 */
-
-
 ;
-
-
-
 
