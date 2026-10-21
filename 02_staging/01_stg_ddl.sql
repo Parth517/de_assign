@@ -90,25 +90,7 @@ USING (
         -- Germany
         ('DEU', 'DEU', 'Germany'), ('DE', 'DEU', 'Germany'), ('GERMANY', 'DEU', 'Germany'), ('GER', 'DEU', 'Germany'), ('DEUTSCHLAND', 'DEU', 'Germany'),
         -- New Zealand
-        ('NZL', 'NZL', 'New Zealand'), ('NZ', 'NZL', 'New Zealand'), ('NEW ZEALAND', 'NZL', 'New Zealand'),
-        -- United Arab Emirates
-        ('ARE', 'ARE', 'United Arab Emirates'), ('AE', 'ARE', 'United Arab Emirates'), ('UAE', 'ARE', 'United Arab Emirates'), ('UNITED ARAB EMIRATES', 'ARE', 'United Arab Emirates'), ('DUBAI', 'ARE', 'United Arab Emirates'),
-        -- Japan
-        ('JPN', 'JPN', 'Japan'), ('JP', 'JPN', 'Japan'), ('JAPAN', 'JPN', 'Japan'), ('NIPPON', 'JPN', 'Japan'),
-        -- China
-        ('CHN', 'CHN', 'China'), ('CN', 'CHN', 'China'), ('CHINA', 'CHN', 'China'),
-        -- France
-        ('FRA', 'FRA', 'France'), ('FR', 'FRA', 'France'), ('FRANCE', 'FRA', 'France'),
-        -- Italy
-        ('ITA', 'ITA', 'Italy'), ('IT', 'ITA', 'Italy'), ('ITALY', 'ITA', 'Italy'), ('ITALIA', 'ITA', 'Italy'),
-        -- Spain
-        ('ESP', 'ESP', 'Spain'), ('ES', 'ESP', 'Spain'), ('SPAIN', 'ESP', 'Spain'), ('ESPANA', 'ESP', 'Spain'),
-        -- Mexico
-        ('MEX', 'MEX', 'Mexico'), ('MX', 'MEX', 'Mexico'), ('MEXICO', 'MEX', 'Mexico'),
-        -- Brazil
-        ('BRA', 'BRA', 'Brazil'), ('BR', 'BRA', 'Brazil'), ('BRAZIL', 'BRA', 'Brazil'), ('BRASIL', 'BRA', 'Brazil'),
-        -- South Africa
-        ('ZAF', 'ZAF', 'South Africa'), ('ZA', 'ZAF', 'South Africa'), ('SOUTH AFRICA', 'ZAF', 'South Africa')
+        ('NZL', 'NZL', 'New Zealand'), ('NZ', 'NZL', 'New Zealand'), ('NEW ZEALAND', 'NZL', 'New Zealand')
 ) src
 ON tgt.ALIAS = src.ALIAS
 WHEN NOT MATCHED THEN
