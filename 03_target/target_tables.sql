@@ -79,26 +79,46 @@ BEGIN
         v_sql := 'ALTER TABLE PROD.TABLE_' || v_country || ' ADD COLUMN IF NOT EXISTS POST_CODE NUMBER(5)';
         EXECUTE IMMEDIATE v_sql;
 
-        -- Step 2: Clear existing records in this country table for fresh refresh
-        v_sql := 'TRUNCATE TABLE PROD.TABLE_' || v_country;
-        EXECUTE IMMEDIATE v_sql;
-
-        -- Step 3: Direct copy from Silver country table (ZERO processing in Gold)
-        v_sql := 'INSERT INTO PROD.TABLE_' || v_country || ' (
-            MEMBER_ID, MEMBER_NAME, TIER_CODE, DOB, ENROLLMENT_DATE, LAST_FLIGHT_DATE,
-            AGE, STALE_MEMBER, AGENT_NAME, STATE, COUNTRY, POST_CODE, IS_ACTIVE, MEMBER_TYPE,
-            START_DATE, END_DATE, SOURCE_FILE, BATCH_ID
-        )
-        SELECT
-            MEMBER_ID, MEMBER_NAME, TIER_CODE, DOB, ENROLLMENT_DATE, LAST_FLIGHT_DATE,
-            AGE, STALE_MEMBER, AGENT_NAME, STATE, COUNTRY, POST_CODE, IS_ACTIVE, MEMBER_TYPE,
-            START_DATE, END_DATE, SOURCE_FILE, BATCH_ID
-        FROM STG.STG_MEMBERS_' || v_country || '
-        WHERE ENROLLMENT_DATE IS NOT NULL
-          AND ENROLLMENT_DATE <= CURRENT_DATE()
-          AND (LAST_FLIGHT_DATE IS NULL OR ENROLLMENT_DATE <= LAST_FLIGHT_DATE)
-          AND (DOB IS NULL OR (DOB <= CURRENT_DATE() AND DATEDIFF(''year'', DOB, CURRENT_DATE()) BETWEEN 0 AND 120))
-          AND MEMBER_ID NOT IN ('''', ''0'', ''00000000'')';
+        -- Step 2: Incremental MERGE from Silver country table into Gold (Zero TRUNCATE)
+        v_sql := 'MERGE INTO PROD.TABLE_' || v_country || ' tgt
+            USING STG.STG_MEMBERS_' || v_country || ' src
+            ON tgt.MEMBER_ID = src.MEMBER_ID
+            WHEN MATCHED AND (
+                tgt.IS_ACTIVE        <> src.IS_ACTIVE OR
+                COALESCE(tgt.END_DATE, ''1900-01-01'') <> COALESCE(src.END_DATE, ''1900-01-01'') OR
+                tgt.TIER_CODE        <> src.TIER_CODE OR
+                COALESCE(tgt.LAST_FLIGHT_DATE, ''1900-01-01'') <> COALESCE(src.LAST_FLIGHT_DATE, ''1900-01-01'') OR
+                COALESCE(tgt.POST_CODE, 0) <> COALESCE(src.POST_CODE, 0)
+            ) THEN
+                UPDATE SET
+                    tgt.MEMBER_NAME      = src.MEMBER_NAME,
+                    tgt.TIER_CODE        = src.TIER_CODE,
+                    tgt.DOB              = src.DOB,
+                    tgt.ENROLLMENT_DATE  = src.ENROLLMENT_DATE,
+                    tgt.LAST_FLIGHT_DATE = src.LAST_FLIGHT_DATE,
+                    tgt.AGE              = src.AGE,
+                    tgt.STALE_MEMBER     = src.STALE_MEMBER,
+                    tgt.AGENT_NAME       = src.AGENT_NAME,
+                    tgt.STATE            = src.STATE,
+                    tgt.POST_CODE        = src.POST_CODE,
+                    tgt.IS_ACTIVE        = src.IS_ACTIVE,
+                    tgt.MEMBER_TYPE      = src.MEMBER_TYPE,
+                    tgt.START_DATE       = src.START_DATE,
+                    tgt.END_DATE         = src.END_DATE,
+                    tgt.SOURCE_FILE      = src.SOURCE_FILE,
+                    tgt.BATCH_ID         = src.BATCH_ID,
+                    tgt.LOADED_AT        = CURRENT_TIMESTAMP()
+            WHEN NOT MATCHED THEN
+                INSERT (
+                    MEMBER_ID, MEMBER_NAME, TIER_CODE, DOB, ENROLLMENT_DATE, LAST_FLIGHT_DATE,
+                    AGE, STALE_MEMBER, AGENT_NAME, STATE, COUNTRY, POST_CODE, IS_ACTIVE, MEMBER_TYPE,
+                    START_DATE, END_DATE, SOURCE_FILE, BATCH_ID, LOADED_AT
+                )
+                VALUES (
+                    src.MEMBER_ID, src.MEMBER_NAME, src.TIER_CODE, src.DOB, src.ENROLLMENT_DATE, src.LAST_FLIGHT_DATE,
+                    src.AGE, src.STALE_MEMBER, src.AGENT_NAME, src.STATE, src.COUNTRY, src.POST_CODE,
+                    src.IS_ACTIVE, src.MEMBER_TYPE, src.START_DATE, src.END_DATE, src.SOURCE_FILE, src.BATCH_ID, CURRENT_TIMESTAMP()
+                )';
         EXECUTE IMMEDIATE v_sql;
 
         v_count := v_count + 1;
