@@ -1,6 +1,6 @@
 # SkyPoints Global Rewards - Scalable Data Engineering Platform
 
-A multi-tiered, resilient data warehouse implementation on Snowflake engineered to ingest, cleanse, standardize, and segment high-volume customer loyalty data and partner airline redemption activity across international markets.
+A multi-tiered, resilient and dynamic data warehouse implementation on Snowflake engineered to ingest, cleanse, standardize, and segment high-volume customer loyalty data and partner airline redemption activity across international markets.
 
 ---
 
@@ -59,6 +59,39 @@ The platform follows a three-stage Medallion pattern designed for fault-tolerant
 |   with member attributes              |  +------------------------------+
 +---------------------------------------+
 ```
+
+---
+
+## Core Architectural Principle:  
+
+A foundational design requirement of this platform is that **no table names, country codes, column layouts, or batch runs are ever hardcoded**. The system is completely autonomous and dynamically adapts to inbound data at runtime:
+
+1. **Dynamic Regional Table Provisioning**:
+   - The stored procedures `STG.SP_CREATE_AND_LOAD_COUNTRY_TABLES()` and `PROD.SP_LOAD_DYNAMIC_COUNTRY_TABLES()` scan inbound data for distinct countries dynamically.
+   - When a new territory appears (e.g., Canada `CAN`, Philippines `PHL`, Sweden `SWE`, Germany `DEU`), Snowflake **automatically provisions physical tables** (`STG.STG_MEMBERS_<COUNTRY>` and `PROD.TABLE_<COUNTRY>`) using dynamic DDL (`EXECUTE IMMEDIATE`), complete with clustering keys and comments. **Zero code changes or manual DDL deployment are required.**
+2. **Dynamic File Structure & Column Absorption**:
+   - The ingestion layer automatically adjusts for column layout shifts between 11-column legacy feeds (omitting postal codes) and 12-column current feeds:
+     `CASE WHEN $12 IS NOT NULL THEN $10 ELSE $12 END AS POST_CODE`
+3. **Dynamic Multi-Branch Date Inference**:
+   - Inbound dates are parsed without pre-configured format masks. The pipeline dynamically tests and extracts `YYYY-MM-DD`, `YYYYMMDD`, `MMDDYYYY`, `DDMMYYYY`, and dropped leading zero formats (`3051985` $\rightarrow$ `03051985`).
+4. **Dynamic Geographic Alias Resolution (`STG.REF_COUNTRY_LOOKUP`)**:
+   - Inbound variations (`India`, `Indi`, `IN`, `Bharat`, `Oz`, `AUST`, `CDA`, `America`) are resolved at runtime via the reference catalog into uniform ISO 3166-1 alpha-3 codes.
+5. **Dynamic Schema Evolution**:
+   - Tables across all schemas utilize idempotent schema evolution (`ALTER TABLE ... ADD COLUMN IF NOT EXISTS`) so subsequent schema modifications automatically propagate without dropping tables or losing historical data.
+6. **Dynamic Batch Scoping & Idempotency**:
+   - Every execution dynamically stamps a timestamp batch token (`$BATCH_ID = TO_VARCHAR(CURRENT_TIMESTAMP(), 'YYYYMMDD_HH24MISS')`). Re-running batches or processing late-arriving files updates state in-place with zero row duplication.
+
+---
+
+## AI-Assisted Engineering & Model Stack
+
+This enterprise data platform was designed, engineered, and hardened using advanced generative AI pair programming models, specifically **Gemini 3.8** and **Claude Sonnet 4.7**:
+
+| AI Model | Primary Project Role & Where Used | Specific Technical Contributions |
+| :--- | :--- | :--- |
+| **Google Gemini 3.8** | **Cloud Data Warehouse Architecture & Snowflake Optimization** | - **Snowflake Runtime Engine Optimization**: Identified subtle SQL compilation pitfalls, including `CONCAT_WS` returning `NULL` for optional string arrays (resolved via `ARRAY_TO_STRING(ARRAY_CONSTRUCT_COMPACT(...), '\|')`) and Snowflake's restrictions on nested CTEs in `MERGE` queries.<br>- **Micro-Partition Pruning Strategy**: Designed optimal clustering key topologies (`MEMBER_ID` on country tables, `(TXN_DATE, MEMBER_ID)` on the redemption fact) for high-throughput scaling.<br>- **Bronze Ingestion Resilience**: Structured schema-on-read patterns to prevent data type landing failures on dirty flat files. |
+| **Anthropic Claude Sonnet 4.7** | **Procedural Logic, SCD-2 Mechanics & Complex Transformation** | - **Dynamic Stored Procedure Generation**: Authored the dynamic SQL engine (`EXECUTE IMMEDIATE`) inside `SP_CREATE_AND_LOAD_COUNTRY_TABLES()` for autonomous territory provisioning.<br>- **Temporal SCD Type 2 Window Logic**: Engineered non-trivial analytical windowing (`LEAD()`, `ROW_NUMBER()`) ordered by business effective dates (`COALESCE(LAST_FLIGHT_DATE, ENROLLMENT_DATE, LOAD_TS)`) to ensure historical accuracy during customer country migration.<br>- **Multi-Variant Date Parser**: Developed the comprehensive regular expression and substring parser handling dropped leading zeros and cross-century year disambiguation.<br>- **Quality Gate & Dead Letter Queue**: Implemented the rejection categorization engine isolating corrupt records into `STG_MEMBERS_REJECTED`. |
+| **Collaborative Workflow** | **End-to-End Validation & Documentation** | - **Synthetic Edge-Case Data Generation**: Created test feeds (`members_batch2.csv`, `members_invalid_dates.csv`, `members_late_arriving.csv`, `redemptions_batch2.json`) simulating complex data defects.<br> |
 
 ---
 
