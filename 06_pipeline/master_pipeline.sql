@@ -157,6 +157,42 @@ USE SCHEMA STG;
 ALTER TABLE IF EXISTS STG.STG_MEMBERS ADD COLUMN IF NOT EXISTS POST_CODE NUMBER(5);
 ALTER TABLE IF EXISTS STG.STG_MEMBERS_REJECTED ADD COLUMN IF NOT EXISTS POST_CODE_RAW VARCHAR(10);
 
+-- Dynamic country lookup table for uniform 3-letter ISO code resolution
+CREATE TABLE IF NOT EXISTS STG.REF_COUNTRY_LOOKUP (
+    ALIAS               VARCHAR(100)    NOT NULL,
+    ISO_ALPHA3          VARCHAR(3)      NOT NULL,
+    COUNTRY_NAME        VARCHAR(100),
+    PRIMARY KEY (ALIAS)
+);
+
+MERGE INTO STG.REF_COUNTRY_LOOKUP tgt
+USING (
+    SELECT UPPER(TRIM(COLUMN1)) AS ALIAS, UPPER(TRIM(COLUMN2)) AS ISO_ALPHA3, TRIM(COLUMN3) AS COUNTRY_NAME
+    FROM VALUES
+        ('IND', 'IND', 'India'), ('INDIA', 'IND', 'India'), ('INDI', 'IND', 'India'), ('IN', 'IND', 'India'), ('BHARAT', 'IND', 'India'),
+        ('AUS', 'AUS', 'Australia'), ('AUSTRALIA', 'AUS', 'Australia'), ('AUST', 'AUS', 'Australia'), ('AUSTRA', 'AUS', 'Australia'), ('AU', 'AUS', 'Australia'), ('OZ', 'AUS', 'Australia'),
+        ('CAN', 'CAN', 'Canada'), ('CANADA', 'CAN', 'Canada'), ('CANAD', 'CAN', 'Canada'), ('CDA', 'CAN', 'Canada'), ('CA', 'CAN', 'Canada'),
+        ('USA', 'USA', 'United States'), ('US', 'USA', 'United States'), ('UNITED STATES', 'USA', 'United States'), ('UNITED STATES OF AMERICA', 'USA', 'United States'), ('U.S.A.', 'USA', 'United States'), ('U.S.', 'USA', 'United States'), ('AMERICA', 'USA', 'United States'),
+        ('PHL', 'PHL', 'Philippines'), ('PHIL', 'PHL', 'Philippines'), ('PHILIPPINES', 'PHL', 'Philippines'), ('PHILIP', 'PHL', 'Philippines'), ('PH', 'PHL', 'Philippines'), ('PILIPINAS', 'PHL', 'Philippines'),
+        ('GBR', 'GBR', 'United Kingdom'), ('GB', 'GBR', 'United Kingdom'), ('UK', 'GBR', 'United Kingdom'), ('UNITED KINGDOM', 'GBR', 'United Kingdom'), ('GREAT BRITAIN', 'GBR', 'United Kingdom'), ('BRITAIN', 'GBR', 'United Kingdom'), ('ENGLAND', 'GBR', 'United Kingdom'),
+        ('SGP', 'SGP', 'Singapore'), ('SG', 'SGP', 'Singapore'), ('SINGAPORE', 'SGP', 'Singapore'), ('SING', 'SGP', 'Singapore'),
+        ('DEU', 'DEU', 'Germany'), ('DE', 'DEU', 'Germany'), ('GERMANY', 'DEU', 'Germany'), ('GER', 'DEU', 'Germany'), ('DEUTSCHLAND', 'DEU', 'Germany'),
+        ('NZL', 'NZL', 'New Zealand'), ('NZ', 'NZL', 'New Zealand'), ('NEW ZEALAND', 'NZL', 'New Zealand'),
+        ('ARE', 'ARE', 'United Arab Emirates'), ('AE', 'ARE', 'United Arab Emirates'), ('UAE', 'ARE', 'United Arab Emirates'), ('UNITED ARAB EMIRATES', 'ARE', 'United Arab Emirates'), ('DUBAI', 'ARE', 'United Arab Emirates'),
+        ('JPN', 'JPN', 'Japan'), ('JP', 'JPN', 'Japan'), ('JAPAN', 'JPN', 'Japan'), ('NIPPON', 'JPN', 'Japan'),
+        ('CHN', 'CHN', 'China'), ('CN', 'CHN', 'China'), ('CHINA', 'CHN', 'China'),
+        ('FRA', 'FRA', 'France'), ('FR', 'FRA', 'France'), ('FRANCE', 'FRA', 'France'),
+        ('ITA', 'ITA', 'Italy'), ('IT', 'ITA', 'Italy'), ('ITALY', 'ITA', 'Italy'), ('ITALIA', 'ITA', 'Italy'),
+        ('ESP', 'ESP', 'Spain'), ('ES', 'ESP', 'Spain'), ('SPAIN', 'ESP', 'Spain'), ('ESPANA', 'ESP', 'Spain'),
+        ('MEX', 'MEX', 'Mexico'), ('MX', 'MEX', 'Mexico'), ('MEXICO', 'MEX', 'Mexico'),
+        ('BRA', 'BRA', 'Brazil'), ('BR', 'BRA', 'Brazil'), ('BRAZIL', 'BRA', 'Brazil'), ('BRASIL', 'BRA', 'Brazil'),
+        ('ZAF', 'ZAF', 'South Africa'), ('ZA', 'ZAF', 'South Africa'), ('SOUTH AFRICA', 'ZAF', 'South Africa')
+) src
+ON tgt.ALIAS = src.ALIAS
+WHEN NOT MATCHED THEN
+    INSERT (ALIAS, ISO_ALPHA3, COUNTRY_NAME)
+    VALUES (src.ALIAS, src.ISO_ALPHA3, src.COUNTRY_NAME);
+
 -- 3a. Idempotent cleanup for this batch
 DELETE FROM STG.STG_MEMBERS WHERE BATCH_ID = $ACTIVE_BATCH_ID;
 
@@ -166,112 +202,133 @@ INSERT INTO STG.STG_MEMBERS (
     AGE, STALE_MEMBER, AGENT_NAME, STATE, COUNTRY, POST_CODE, IS_ACTIVE, MEMBER_TYPE,
     IS_VALID, REJECTION_REASON, SOURCE_FILE, LOAD_TS, BATCH_ID
 )
-WITH raw_normalized AS (
-    SELECT
-        TRIM(MEMBER_ID)                                 AS MEMBER_ID,
-        TRIM(MEMBER_NAME)                               AS MEMBER_NAME,
-        UPPER(TRIM(TIER_CODE))                          AS TIER_CODE,
-        TRIM(AGENT_NAME)                                AS AGENT_NAME,
-        TRIM(STATE)                                     AS STATE,
-        -- Handle optional Country: fallback to filename or keep NULL
-        COALESCE(
-            NULLIF(TRIM(COUNTRY), ''),
-            CASE
-                WHEN UPPER(SOURCE_FILE) LIKE '%IND%'   THEN 'IND'
-                WHEN UPPER(SOURCE_FILE) LIKE '%USA%'   THEN 'USA'
-                WHEN UPPER(SOURCE_FILE) LIKE '%AUS%'   THEN 'AUS'
-                WHEN UPPER(SOURCE_FILE) LIKE '%CAN%'   THEN 'CAN'
-                WHEN UPPER(SOURCE_FILE) LIKE '%PHIL%'  THEN 'PHIL'
-                ELSE NULL
-            END
-        )                                               AS COUNTRY,
-        TRY_TO_NUMBER(TRIM(POST_CODE))                  AS POST_CODE,
-        TRIM(POST_CODE)                                 AS POST_CODE_RAW,
-        NULLIF(TRIM(IS_ACTIVE), '')                     AS IS_ACTIVE,
-        NULL::VARCHAR(1)                                AS MEMBER_TYPE,
-        -- DOB: spec format is DDMMYYYY (e.g. 03051985 = 3 May 1985; also handles 7-digit 3051985)
-        COALESCE(
-            TRY_TO_DATE(TRIM(DOB), 'DDMMYYYY'),
-            CASE WHEN LENGTH(TRIM(DOB)) = 7 THEN TRY_TO_DATE('0' || TRIM(DOB), 'DDMMYYYY') END
-        )                                               AS DOB_PARSED,
-        TRIM(DOB)                                       AS DOB_RAW,
-
-        -- Enrollment date: Intelligent multi-format parser avoiding false year matches (e.g. 1052022 -> 2022-10-05, NOT 1052-02-02)
-        CASE
-            WHEN TRIM(ENROLLMENT_DATE) LIKE '____-__-__'
-                 THEN TRY_TO_DATE(TRIM(ENROLLMENT_DATE), 'YYYY-MM-DD')
-
-            WHEN LENGTH(TRIM(ENROLLMENT_DATE)) = 8 AND REGEXP_LIKE(TRIM(ENROLLMENT_DATE), '^[0-9]+$')
-                 THEN COALESCE(
-                     CASE WHEN SUBSTR(TRIM(ENROLLMENT_DATE), 1, 2) IN ('19', '20')
-                          THEN TRY_TO_DATE(TRIM(ENROLLMENT_DATE), 'YYYYMMDD') END,
-                     CASE WHEN SUBSTR(TRIM(ENROLLMENT_DATE), 5, 2) IN ('19', '20')
-                          THEN TRY_TO_DATE(TRIM(ENROLLMENT_DATE), 'MMDDYYYY') END
-                 )
-
-            WHEN LENGTH(TRIM(ENROLLMENT_DATE)) = 7 AND REGEXP_LIKE(TRIM(ENROLLMENT_DATE), '^[0-9]+$')
-                 THEN COALESCE(
-                     CASE WHEN TRY_TO_NUMBER(SUBSTR(TRIM(ENROLLMENT_DATE), 1, 2)) BETWEEN 1 AND 12
-                           AND SUBSTR(TRIM(ENROLLMENT_DATE), 4, 2) IN ('19', '20')
-                          THEN TRY_TO_DATE(
-                              SUBSTR(TRIM(ENROLLMENT_DATE), 4, 4) || '-' ||
-                              SUBSTR(TRIM(ENROLLMENT_DATE), 1, 2) || '-0' ||
-                              SUBSTR(TRIM(ENROLLMENT_DATE), 3, 1),
-                              'YYYY-MM-DD'
-                          ) END,
-                     CASE WHEN SUBSTR(TRIM(ENROLLMENT_DATE), 4, 2) IN ('19', '20')
-                          THEN TRY_TO_DATE(
-                              SUBSTR(TRIM(ENROLLMENT_DATE), 4, 4) || '-0' ||
-                              SUBSTR(TRIM(ENROLLMENT_DATE), 1, 1) || '-' ||
-                              SUBSTR(TRIM(ENROLLMENT_DATE), 2, 2),
-                              'YYYY-MM-DD'
-                          ) END
-                 )
-        END                                             AS ENROLLMENT_DATE_PARSED,
-        TRIM(ENROLLMENT_DATE)                           AS ENROLLMENT_DATE_RAW,
-
-        -- Last flight date: same intelligent multi-format parser
-        CASE
-            WHEN TRIM(LAST_FLIGHT_DATE) LIKE '____-__-__'
-                 THEN TRY_TO_DATE(TRIM(LAST_FLIGHT_DATE), 'YYYY-MM-DD')
-
-            WHEN LENGTH(TRIM(LAST_FLIGHT_DATE)) = 8 AND REGEXP_LIKE(TRIM(LAST_FLIGHT_DATE), '^[0-9]+$')
-                 THEN COALESCE(
-                     CASE WHEN SUBSTR(TRIM(LAST_FLIGHT_DATE), 1, 2) IN ('19', '20')
-                          THEN TRY_TO_DATE(TRIM(LAST_FLIGHT_DATE), 'YYYYMMDD') END,
-                     CASE WHEN SUBSTR(TRIM(LAST_FLIGHT_DATE), 5, 2) IN ('19', '20')
-                          THEN TRY_TO_DATE(TRIM(LAST_FLIGHT_DATE), 'MMDDYYYY') END
-                 )
-
-            WHEN LENGTH(TRIM(LAST_FLIGHT_DATE)) = 7 AND REGEXP_LIKE(TRIM(LAST_FLIGHT_DATE), '^[0-9]+$')
-                 THEN COALESCE(
-                     CASE WHEN TRY_TO_NUMBER(SUBSTR(TRIM(LAST_FLIGHT_DATE), 1, 2)) BETWEEN 1 AND 12
-                           AND SUBSTR(TRIM(LAST_FLIGHT_DATE), 4, 2) IN ('19', '20')
-                          THEN TRY_TO_DATE(
-                              SUBSTR(TRIM(LAST_FLIGHT_DATE), 4, 4) || '-' ||
-                              SUBSTR(TRIM(LAST_FLIGHT_DATE), 1, 2) || '-0' ||
-                              SUBSTR(TRIM(LAST_FLIGHT_DATE), 3, 1),
-                              'YYYY-MM-DD'
-                          ) END,
-                     CASE WHEN SUBSTR(TRIM(LAST_FLIGHT_DATE), 4, 2) IN ('19', '20')
-                          THEN TRY_TO_DATE(
-                              SUBSTR(TRIM(LAST_FLIGHT_DATE), 4, 4) || '-0' ||
-                              SUBSTR(TRIM(LAST_FLIGHT_DATE), 1, 1) || '-' ||
-                              SUBSTR(TRIM(LAST_FLIGHT_DATE), 2, 2),
-                              'YYYY-MM-DD'
-                          ) END
-                 )
-        END                                             AS LAST_FLIGHT_DATE_PARSED,
-        TRIM(LAST_FLIGHT_DATE)                          AS LAST_FLIGHT_DATE_RAW,
-        COALESCE(SOURCE_FILE, 'MEMBERS_FEED')           AS SOURCE_FILE,
-        COALESCE(LOAD_TS, CURRENT_TIMESTAMP())          AS LOAD_TS,
-        $ACTIVE_BATCH_ID                                AS BATCH_ID
+WITH raw_filtered AS (
+    SELECT *
     FROM RAW.RAW_MEMBERS
     WHERE UPPER(TRIM(COALESCE(REC_TYPE, 'D'))) NOT IN ('H', 'HEADER')
       AND (
           ($BATCH_IN_RAW IS NOT NULL AND BATCH_ID = $BATCH_IN_RAW)
           OR ($BATCH_IN_RAW IS NULL)
       )
+),
+country_lookup AS (
+    SELECT DISTINCT UPPER(TRIM(ALIAS)) AS ALIAS, UPPER(TRIM(ISO_ALPHA3)) AS ISO_ALPHA3
+    FROM STG.REF_COUNTRY_LOOKUP
+),
+country_canonical AS (
+    SELECT DISTINCT UPPER(TRIM(ISO_ALPHA3)) AS ISO_ALPHA3, UPPER(TRIM(COUNTRY_NAME)) AS CANONICAL_NAME
+    FROM STG.REF_COUNTRY_LOOKUP
+    WHERE COUNTRY_NAME IS NOT NULL
+    QUALIFY ROW_NUMBER() OVER (PARTITION BY UPPER(TRIM(COUNTRY_NAME)) ORDER BY ISO_ALPHA3) = 1
+),
+raw_normalized AS (
+    SELECT
+        TRIM(r.MEMBER_ID)                               AS MEMBER_ID,
+        TRIM(r.MEMBER_NAME)                             AS MEMBER_NAME,
+        UPPER(TRIM(r.TIER_CODE))                        AS TIER_CODE,
+        TRIM(r.AGENT_NAME)                              AS AGENT_NAME,
+        TRIM(r.STATE)                                   AS STATE,
+        -- Pragmatic dynamic country resolution via STG.REF_COUNTRY_LOOKUP:
+        -- 1. Exact alias match from lookup table (e.g. 'Indi' -> 'IND', 'Aust' -> 'AUS', 'US' -> 'USA')
+        -- 2. Prefix match against canonical country name if length >= 3 (e.g. 'Canad' -> 'Canada' -> 'CAN')
+        -- 3. Direct 3-letter ISO code if already valid; otherwise NULL (triggers MISSING_COUNTRY rejection)
+        COALESCE(
+            lkp.ISO_ALPHA3,
+            pfx.ISO_ALPHA3,
+            CASE WHEN LENGTH(TRIM(r.COUNTRY)) = 3 THEN UPPER(TRIM(r.COUNTRY)) END
+        )                                               AS COUNTRY,
+        TRY_TO_NUMBER(TRIM(r.POST_CODE))                AS POST_CODE,
+        TRIM(r.POST_CODE)                               AS POST_CODE_RAW,
+        NULLIF(TRIM(r.IS_ACTIVE), '')                   AS IS_ACTIVE,
+        NULL::VARCHAR(1)                                AS MEMBER_TYPE,
+        -- DOB: spec format is DDMMYYYY (e.g. 03051985 = 3 May 1985; also handles 7-digit 3051985)
+        COALESCE(
+            TRY_TO_DATE(TRIM(r.DOB), 'DDMMYYYY'),
+            CASE WHEN LENGTH(TRIM(r.DOB)) = 7 THEN TRY_TO_DATE('0' || TRIM(r.DOB), 'DDMMYYYY') END
+        )                                               AS DOB_PARSED,
+        TRIM(r.DOB)                                       AS DOB_RAW,
+
+        -- Enrollment date: Intelligent multi-format parser avoiding false year matches (e.g. 1052022 -> 2022-10-05, NOT 1052-02-02)
+        CASE
+            WHEN TRIM(r.ENROLLMENT_DATE) LIKE '____-__-__'
+                 THEN TRY_TO_DATE(TRIM(r.ENROLLMENT_DATE), 'YYYY-MM-DD')
+
+            WHEN LENGTH(TRIM(r.ENROLLMENT_DATE)) = 8 AND REGEXP_LIKE(TRIM(r.ENROLLMENT_DATE), '^[0-9]+$')
+                 THEN COALESCE(
+                     CASE WHEN SUBSTR(TRIM(r.ENROLLMENT_DATE), 1, 2) IN ('19', '20')
+                          THEN TRY_TO_DATE(TRIM(r.ENROLLMENT_DATE), 'YYYYMMDD') END,
+                     CASE WHEN SUBSTR(TRIM(r.ENROLLMENT_DATE), 5, 2) IN ('19', '20')
+                          THEN TRY_TO_DATE(TRIM(r.ENROLLMENT_DATE), 'MMDDYYYY') END
+                 )
+
+            WHEN LENGTH(TRIM(r.ENROLLMENT_DATE)) = 7 AND REGEXP_LIKE(TRIM(r.ENROLLMENT_DATE), '^[0-9]+$')
+                 THEN COALESCE(
+                     CASE WHEN TRY_TO_NUMBER(SUBSTR(TRIM(r.ENROLLMENT_DATE), 1, 2)) BETWEEN 1 AND 12
+                           AND SUBSTR(TRIM(r.ENROLLMENT_DATE), 4, 2) IN ('19', '20')
+                          THEN TRY_TO_DATE(
+                              SUBSTR(TRIM(r.ENROLLMENT_DATE), 4, 4) || '-' ||
+                              SUBSTR(TRIM(r.ENROLLMENT_DATE), 1, 2) || '-0' ||
+                              SUBSTR(TRIM(r.ENROLLMENT_DATE), 3, 1),
+                              'YYYY-MM-DD'
+                          ) END,
+                     CASE WHEN SUBSTR(TRIM(r.ENROLLMENT_DATE), 4, 2) IN ('19', '20')
+                          THEN TRY_TO_DATE(
+                              SUBSTR(TRIM(r.ENROLLMENT_DATE), 4, 4) || '-0' ||
+                              SUBSTR(TRIM(r.ENROLLMENT_DATE), 1, 1) || '-' ||
+                              SUBSTR(TRIM(r.ENROLLMENT_DATE), 2, 2),
+                              'YYYY-MM-DD'
+                          ) END
+                 )
+        END                                             AS ENROLLMENT_DATE_PARSED,
+        TRIM(r.ENROLLMENT_DATE)                           AS ENROLLMENT_DATE_RAW,
+
+        -- Last flight date: same intelligent multi-format parser
+        CASE
+            WHEN TRIM(r.LAST_FLIGHT_DATE) LIKE '____-__-__'
+                 THEN TRY_TO_DATE(TRIM(r.LAST_FLIGHT_DATE), 'YYYY-MM-DD')
+
+            WHEN LENGTH(TRIM(r.LAST_FLIGHT_DATE)) = 8 AND REGEXP_LIKE(TRIM(r.LAST_FLIGHT_DATE), '^[0-9]+$')
+                 THEN COALESCE(
+                     CASE WHEN SUBSTR(TRIM(r.LAST_FLIGHT_DATE), 1, 2) IN ('19', '20')
+                          THEN TRY_TO_DATE(TRIM(r.LAST_FLIGHT_DATE), 'YYYYMMDD') END,
+                     CASE WHEN SUBSTR(TRIM(r.LAST_FLIGHT_DATE), 5, 2) IN ('19', '20')
+                          THEN TRY_TO_DATE(TRIM(r.LAST_FLIGHT_DATE), 'MMDDYYYY') END
+                 )
+
+            WHEN LENGTH(TRIM(r.LAST_FLIGHT_DATE)) = 7 AND REGEXP_LIKE(TRIM(r.LAST_FLIGHT_DATE), '^[0-9]+$')
+                 THEN COALESCE(
+                     CASE WHEN TRY_TO_NUMBER(SUBSTR(TRIM(r.LAST_FLIGHT_DATE), 1, 2)) BETWEEN 1 AND 12
+                           AND SUBSTR(TRIM(r.LAST_FLIGHT_DATE), 4, 2) IN ('19', '20')
+                          THEN TRY_TO_DATE(
+                              SUBSTR(TRIM(r.LAST_FLIGHT_DATE), 4, 4) || '-' ||
+                              SUBSTR(TRIM(r.LAST_FLIGHT_DATE), 1, 2) || '-0' ||
+                              SUBSTR(TRIM(r.LAST_FLIGHT_DATE), 3, 1),
+                              'YYYY-MM-DD'
+                          ) END,
+                     CASE WHEN SUBSTR(TRIM(r.LAST_FLIGHT_DATE), 4, 2) IN ('19', '20')
+                          THEN TRY_TO_DATE(
+                              SUBSTR(TRIM(r.LAST_FLIGHT_DATE), 4, 4) || '-0' ||
+                              SUBSTR(TRIM(r.LAST_FLIGHT_DATE), 1, 1) || '-' ||
+                              SUBSTR(TRIM(r.LAST_FLIGHT_DATE), 2, 2),
+                              'YYYY-MM-DD'
+                          ) END
+                 )
+        END                                             AS LAST_FLIGHT_DATE_PARSED,
+        TRIM(r.LAST_FLIGHT_DATE)                          AS LAST_FLIGHT_DATE_RAW,
+        COALESCE(r.SOURCE_FILE, 'MEMBERS_FEED')           AS SOURCE_FILE,
+        COALESCE(r.LOAD_TS, CURRENT_TIMESTAMP())          AS LOAD_TS,
+        $ACTIVE_BATCH_ID                                AS BATCH_ID
+    FROM raw_filtered r
+    LEFT JOIN country_lookup lkp
+        ON UPPER(TRIM(r.COUNTRY)) = lkp.ALIAS
+    LEFT JOIN country_canonical pfx
+        ON lkp.ISO_ALPHA3 IS NULL
+       AND r.COUNTRY IS NOT NULL
+       AND LENGTH(TRIM(r.COUNTRY)) >= 3
+       AND (
+           STARTSWITH(pfx.CANONICAL_NAME, UPPER(TRIM(r.COUNTRY)))
+           OR STARTSWITH(UPPER(TRIM(r.COUNTRY)), pfx.CANONICAL_NAME)
+       )
 ),
 with_derived AS (
     SELECT
@@ -584,6 +641,104 @@ $$;
 
 CALL PROD.SP_LOAD_DYNAMIC_COUNTRY_TABLES();
 
+-- ── 6b. ENRICHED MEMBER REDEMPTIONS FACT TABLE (Assessment Deliverable 4) ───
+-- Production analytics table joining partner airline redemption transactions
+-- with member profile data.
+CREATE TABLE IF NOT EXISTS PROD.FACT_MEMBER_REDEMPTIONS (
+    TXN_ID              VARCHAR(50)     NOT NULL,
+    TXN_DATE            DATE,
+    FEED_DATE           DATE,
+    PARTNER             VARCHAR(100),
+    MILES_REDEEMED      NUMBER(12),
+    STATUS              VARCHAR(20),
+    -- Joined Member Attributes
+    MEMBER_ID           VARCHAR(20)     NOT NULL,
+    MEMBER_NAME         VARCHAR(100),
+    TIER_CODE           VARCHAR(10),
+    AGE                 NUMBER(3),
+    STALE_MEMBER        VARCHAR(1),
+    AGENT_NAME          VARCHAR(100),
+    STATE               VARCHAR(50),
+    COUNTRY             VARCHAR(10)     COMMENT 'Member canonical 3-letter country',
+    POST_CODE           NUMBER(5),
+    IS_ACTIVE    NUMBER(1)       COMMENT '1 if active, 0 if inactive/moved',
+    -- Audit
+    SOURCE_FILE         VARCHAR(500),
+    BATCH_ID            VARCHAR(50),
+    LOADED_AT           TIMESTAMP_NTZ   DEFAULT CURRENT_TIMESTAMP(),
+    PRIMARY KEY (TXN_ID)
+)
+CLUSTER BY (TXN_DATE, MEMBER_ID)
+COMMENT = 'Gold: Production fact table joining partner airline redemptions with member profiles';
+
+MERGE INTO PROD.FACT_MEMBER_REDEMPTIONS tgt
+USING (
+    WITH latest_member AS (
+        SELECT
+            MEMBER_ID, MEMBER_NAME, TIER_CODE, DOB, AGE, STALE_MEMBER,
+            AGENT_NAME, STATE, COUNTRY, POST_CODE, IS_ACTIVE, MEMBER_TYPE,
+            ENROLLMENT_DATE, LAST_FLIGHT_DATE
+        FROM STG.STG_MEMBERS
+        WHERE IS_VALID = TRUE
+        QUALIFY ROW_NUMBER() OVER (
+            PARTITION BY MEMBER_ID 
+            ORDER BY COALESCE(LAST_FLIGHT_DATE, ENROLLMENT_DATE, LOAD_TS::DATE) DESC, LOAD_TS DESC
+        ) = 1
+    )
+    SELECT
+        r.TXN_ID,
+        r.TXN_DATE,
+        r.FEED_DATE,
+        r.PARTNER,
+        r.MILES_REDEEMED,
+        r.STATUS,
+        r.MEMBER_ID,
+        m.MEMBER_NAME,
+        m.TIER_CODE,
+        m.AGE,
+        m.STALE_MEMBER,
+        m.AGENT_NAME,
+        m.STATE,
+        m.COUNTRY,
+        m.POST_CODE,
+        CASE WHEN m.IS_ACTIVE = 'A' OR m.IS_ACTIVE = '1' THEN 1 ELSE 0 END AS IS_ACTIVE,
+        r.SOURCE_FILE,
+        r.BATCH_ID
+    FROM STG.STG_REDEMPTIONS r
+    LEFT JOIN latest_member m
+        ON r.MEMBER_ID = m.MEMBER_ID
+) src
+ON tgt.TXN_ID = src.TXN_ID
+WHEN MATCHED THEN
+    UPDATE SET
+        tgt.TXN_DATE         = src.TXN_DATE,
+        tgt.FEED_DATE        = src.FEED_DATE,
+        tgt.PARTNER          = src.PARTNER,
+        tgt.MILES_REDEEMED   = src.MILES_REDEEMED,
+        tgt.STATUS           = src.STATUS,
+        tgt.MEMBER_NAME      = src.MEMBER_NAME,
+        tgt.TIER_CODE        = src.TIER_CODE,
+        tgt.AGE              = src.AGE,
+        tgt.STALE_MEMBER     = src.STALE_MEMBER,
+        tgt.AGENT_NAME       = src.AGENT_NAME,
+        tgt.STATE            = src.STATE,
+        tgt.COUNTRY          = src.COUNTRY,
+        tgt.POST_CODE        = src.POST_CODE,
+        tgt.IS_ACTIVE = src.IS_ACTIVE,
+        tgt.BATCH_ID         = src.BATCH_ID,
+        tgt.LOADED_AT        = CURRENT_TIMESTAMP()
+WHEN NOT MATCHED THEN
+    INSERT (
+        TXN_ID, TXN_DATE, FEED_DATE, PARTNER, MILES_REDEEMED, STATUS,
+        MEMBER_ID, MEMBER_NAME, TIER_CODE, AGE, STALE_MEMBER, AGENT_NAME,
+        STATE, COUNTRY, POST_CODE, IS_ACTIVE, SOURCE_FILE, BATCH_ID
+    )
+    VALUES (
+        src.TXN_ID, src.TXN_DATE, src.FEED_DATE, src.PARTNER, src.MILES_REDEEMED, src.STATUS,
+        src.MEMBER_ID, src.MEMBER_NAME, src.TIER_CODE, src.AGE, src.STALE_MEMBER, src.AGENT_NAME,
+        src.STATE, src.COUNTRY, src.POST_CODE, src.IS_ACTIVE, src.SOURCE_FILE, src.BATCH_ID
+    );
+
 
 -- ── 7. SUMMARY REPORT ────────────────────────────────────────────────────────
 SELECT 'PIPELINE_COMPLETE' AS STATUS, $BATCH_ID AS PROCESSED_BATCH_ID;
@@ -645,7 +800,6 @@ AS
 
 
 ;
-
 
 
 

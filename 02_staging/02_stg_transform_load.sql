@@ -48,112 +48,133 @@ INSERT INTO STG.STG_MEMBERS (
     AGE, STALE_MEMBER, AGENT_NAME, STATE, COUNTRY, POST_CODE, IS_ACTIVE, MEMBER_TYPE,
     IS_VALID, REJECTION_REASON, SOURCE_FILE, LOAD_TS, BATCH_ID
 )
-WITH raw_normalized AS (
-    SELECT
-        TRIM(MEMBER_ID)                                 AS MEMBER_ID,
-        TRIM(MEMBER_NAME)                               AS MEMBER_NAME,
-        UPPER(TRIM(TIER_CODE))                          AS TIER_CODE,
-        TRIM(AGENT_NAME)                                AS AGENT_NAME,
-        TRIM(STATE)                                     AS STATE,
-        -- Handle optional Country: fallback to filename or keep NULL
-        COALESCE(
-            NULLIF(TRIM(COUNTRY), ''),
-            CASE
-                WHEN UPPER(SOURCE_FILE) LIKE '%IND%'   THEN 'IND'
-                WHEN UPPER(SOURCE_FILE) LIKE '%USA%'   THEN 'USA'
-                WHEN UPPER(SOURCE_FILE) LIKE '%AUS%'   THEN 'AUS'
-                WHEN UPPER(SOURCE_FILE) LIKE '%CAN%'   THEN 'CAN'
-                WHEN UPPER(SOURCE_FILE) LIKE '%PHIL%'  THEN 'PHIL'
-                ELSE NULL
-            END
-        )                                               AS COUNTRY,
-        TRY_TO_NUMBER(TRIM(POST_CODE))                  AS POST_CODE,
-        TRIM(POST_CODE)                                 AS POST_CODE_RAW,
-        NULLIF(TRIM(IS_ACTIVE), '')                     AS IS_ACTIVE,
-        NULL::VARCHAR(1)                                AS MEMBER_TYPE,
-        -- DOB: spec format is DDMMYYYY (e.g. 03051985 = 3 May 1985; also handles 7-digit 3051985)
-        COALESCE(
-            TRY_TO_DATE(TRIM(DOB), 'DDMMYYYY'),
-            CASE WHEN LENGTH(TRIM(DOB)) = 7 THEN TRY_TO_DATE('0' || TRIM(DOB), 'DDMMYYYY') END
-        )                                               AS DOB_PARSED,
-        TRIM(DOB)                                       AS DOB_RAW,
-
-        -- Enrollment date: Intelligent multi-format parser avoiding false year matches (e.g. 1052022 -> 2022-10-05, NOT 1052-02-02)
-        CASE
-            WHEN TRIM(ENROLLMENT_DATE) LIKE '____-__-__'
-                 THEN TRY_TO_DATE(TRIM(ENROLLMENT_DATE), 'YYYY-MM-DD')
-
-            WHEN LENGTH(TRIM(ENROLLMENT_DATE)) = 8 AND REGEXP_LIKE(TRIM(ENROLLMENT_DATE), '^[0-9]+$')
-                 THEN COALESCE(
-                     CASE WHEN SUBSTR(TRIM(ENROLLMENT_DATE), 1, 2) IN ('19', '20')
-                          THEN TRY_TO_DATE(TRIM(ENROLLMENT_DATE), 'YYYYMMDD') END,
-                     CASE WHEN SUBSTR(TRIM(ENROLLMENT_DATE), 5, 2) IN ('19', '20')
-                          THEN TRY_TO_DATE(TRIM(ENROLLMENT_DATE), 'MMDDYYYY') END
-                 )
-
-            WHEN LENGTH(TRIM(ENROLLMENT_DATE)) = 7 AND REGEXP_LIKE(TRIM(ENROLLMENT_DATE), '^[0-9]+$')
-                 THEN COALESCE(
-                     CASE WHEN TRY_TO_NUMBER(SUBSTR(TRIM(ENROLLMENT_DATE), 1, 2)) BETWEEN 1 AND 12
-                           AND SUBSTR(TRIM(ENROLLMENT_DATE), 4, 2) IN ('19', '20')
-                          THEN TRY_TO_DATE(
-                              SUBSTR(TRIM(ENROLLMENT_DATE), 4, 4) || '-' ||
-                              SUBSTR(TRIM(ENROLLMENT_DATE), 1, 2) || '-0' ||
-                              SUBSTR(TRIM(ENROLLMENT_DATE), 3, 1),
-                              'YYYY-MM-DD'
-                          ) END,
-                     CASE WHEN SUBSTR(TRIM(ENROLLMENT_DATE), 4, 2) IN ('19', '20')
-                          THEN TRY_TO_DATE(
-                              SUBSTR(TRIM(ENROLLMENT_DATE), 4, 4) || '-0' ||
-                              SUBSTR(TRIM(ENROLLMENT_DATE), 1, 1) || '-' ||
-                              SUBSTR(TRIM(ENROLLMENT_DATE), 2, 2),
-                              'YYYY-MM-DD'
-                          ) END
-                 )
-        END                                             AS ENROLLMENT_DATE_PARSED,
-        TRIM(ENROLLMENT_DATE)                           AS ENROLLMENT_DATE_RAW,
-
-        -- Last flight date: same intelligent multi-format parser
-        CASE
-            WHEN TRIM(LAST_FLIGHT_DATE) LIKE '____-__-__'
-                 THEN TRY_TO_DATE(TRIM(LAST_FLIGHT_DATE), 'YYYY-MM-DD')
-
-            WHEN LENGTH(TRIM(LAST_FLIGHT_DATE)) = 8 AND REGEXP_LIKE(TRIM(LAST_FLIGHT_DATE), '^[0-9]+$')
-                 THEN COALESCE(
-                     CASE WHEN SUBSTR(TRIM(LAST_FLIGHT_DATE), 1, 2) IN ('19', '20')
-                          THEN TRY_TO_DATE(TRIM(LAST_FLIGHT_DATE), 'YYYYMMDD') END,
-                     CASE WHEN SUBSTR(TRIM(LAST_FLIGHT_DATE), 5, 2) IN ('19', '20')
-                          THEN TRY_TO_DATE(TRIM(LAST_FLIGHT_DATE), 'MMDDYYYY') END
-                 )
-
-            WHEN LENGTH(TRIM(LAST_FLIGHT_DATE)) = 7 AND REGEXP_LIKE(TRIM(LAST_FLIGHT_DATE), '^[0-9]+$')
-                 THEN COALESCE(
-                     CASE WHEN TRY_TO_NUMBER(SUBSTR(TRIM(LAST_FLIGHT_DATE), 1, 2)) BETWEEN 1 AND 12
-                           AND SUBSTR(TRIM(LAST_FLIGHT_DATE), 4, 2) IN ('19', '20')
-                          THEN TRY_TO_DATE(
-                              SUBSTR(TRIM(LAST_FLIGHT_DATE), 4, 4) || '-' ||
-                              SUBSTR(TRIM(LAST_FLIGHT_DATE), 1, 2) || '-0' ||
-                              SUBSTR(TRIM(LAST_FLIGHT_DATE), 3, 1),
-                              'YYYY-MM-DD'
-                          ) END,
-                     CASE WHEN SUBSTR(TRIM(LAST_FLIGHT_DATE), 4, 2) IN ('19', '20')
-                          THEN TRY_TO_DATE(
-                              SUBSTR(TRIM(LAST_FLIGHT_DATE), 4, 4) || '-0' ||
-                              SUBSTR(TRIM(LAST_FLIGHT_DATE), 1, 1) || '-' ||
-                              SUBSTR(TRIM(LAST_FLIGHT_DATE), 2, 2),
-                              'YYYY-MM-DD'
-                          ) END
-                 )
-        END                                             AS LAST_FLIGHT_DATE_PARSED,
-        TRIM(LAST_FLIGHT_DATE)                          AS LAST_FLIGHT_DATE_RAW,
-        COALESCE(SOURCE_FILE, 'MEMBERS_FEED')           AS SOURCE_FILE,
-        COALESCE(LOAD_TS, CURRENT_TIMESTAMP())          AS LOAD_TS,
-        $ACTIVE_BATCH_ID                                AS BATCH_ID
+WITH raw_filtered AS (
+    SELECT *
     FROM RAW.RAW_MEMBERS
     WHERE UPPER(TRIM(COALESCE(REC_TYPE, 'D'))) NOT IN ('H', 'HEADER')
       AND (
           ($BATCH_IN_RAW IS NOT NULL AND BATCH_ID = $BATCH_IN_RAW)
           OR ($BATCH_IN_RAW IS NULL)
       )
+),
+country_lookup AS (
+    SELECT DISTINCT UPPER(TRIM(ALIAS)) AS ALIAS, UPPER(TRIM(ISO_ALPHA3)) AS ISO_ALPHA3
+    FROM STG.REF_COUNTRY_LOOKUP
+),
+country_canonical AS (
+    SELECT DISTINCT UPPER(TRIM(ISO_ALPHA3)) AS ISO_ALPHA3, UPPER(TRIM(COUNTRY_NAME)) AS CANONICAL_NAME
+    FROM STG.REF_COUNTRY_LOOKUP
+    WHERE COUNTRY_NAME IS NOT NULL
+    QUALIFY ROW_NUMBER() OVER (PARTITION BY UPPER(TRIM(COUNTRY_NAME)) ORDER BY ISO_ALPHA3) = 1
+),
+raw_normalized AS (
+    SELECT
+        TRIM(r.MEMBER_ID)                               AS MEMBER_ID,
+        TRIM(r.MEMBER_NAME)                             AS MEMBER_NAME,
+        UPPER(TRIM(r.TIER_CODE))                        AS TIER_CODE,
+        TRIM(r.AGENT_NAME)                              AS AGENT_NAME,
+        TRIM(r.STATE)                                   AS STATE,
+        -- Pragmatic dynamic country resolution via STG.REF_COUNTRY_LOOKUP:
+        -- 1. Exact alias match from lookup table (e.g. 'Indi' -> 'IND', 'Aust' -> 'AUS', 'US' -> 'USA')
+        -- 2. Prefix match against canonical country name if length >= 3 (e.g. 'Canad' -> 'Canada' -> 'CAN')
+        -- 3. Direct 3-letter ISO code if already valid; otherwise NULL (triggers MISSING_COUNTRY rejection)
+        COALESCE(
+            lkp.ISO_ALPHA3,
+            pfx.ISO_ALPHA3,
+            CASE WHEN LENGTH(TRIM(r.COUNTRY)) = 3 THEN UPPER(TRIM(r.COUNTRY)) END
+        )                                               AS COUNTRY,
+        TRY_TO_NUMBER(TRIM(r.POST_CODE))                AS POST_CODE,
+        TRIM(r.POST_CODE)                               AS POST_CODE_RAW,
+        NULLIF(TRIM(r.IS_ACTIVE), '')                   AS IS_ACTIVE,
+        NULL::VARCHAR(1)                                AS MEMBER_TYPE,
+        -- DOB: spec format is DDMMYYYY (e.g. 03051985 = 3 May 1985; also handles 7-digit 3051985)
+        COALESCE(
+            TRY_TO_DATE(TRIM(r.DOB), 'DDMMYYYY'),
+            CASE WHEN LENGTH(TRIM(r.DOB)) = 7 THEN TRY_TO_DATE('0' || TRIM(r.DOB), 'DDMMYYYY') END
+        )                                               AS DOB_PARSED,
+        TRIM(r.DOB)                                       AS DOB_RAW,
+
+        -- Enrollment date: Intelligent multi-format parser avoiding false year matches (e.g. 1052022 -> 2022-10-05, NOT 1052-02-02)
+        CASE
+            WHEN TRIM(r.ENROLLMENT_DATE) LIKE '____-__-__'
+                 THEN TRY_TO_DATE(TRIM(r.ENROLLMENT_DATE), 'YYYY-MM-DD')
+
+            WHEN LENGTH(TRIM(r.ENROLLMENT_DATE)) = 8 AND REGEXP_LIKE(TRIM(r.ENROLLMENT_DATE), '^[0-9]+$')
+                 THEN COALESCE(
+                     CASE WHEN SUBSTR(TRIM(r.ENROLLMENT_DATE), 1, 2) IN ('19', '20')
+                          THEN TRY_TO_DATE(TRIM(r.ENROLLMENT_DATE), 'YYYYMMDD') END,
+                     CASE WHEN SUBSTR(TRIM(r.ENROLLMENT_DATE), 5, 2) IN ('19', '20')
+                          THEN TRY_TO_DATE(TRIM(r.ENROLLMENT_DATE), 'MMDDYYYY') END
+                 )
+
+            WHEN LENGTH(TRIM(r.ENROLLMENT_DATE)) = 7 AND REGEXP_LIKE(TRIM(r.ENROLLMENT_DATE), '^[0-9]+$')
+                 THEN COALESCE(
+                     CASE WHEN TRY_TO_NUMBER(SUBSTR(TRIM(r.ENROLLMENT_DATE), 1, 2)) BETWEEN 1 AND 12
+                           AND SUBSTR(TRIM(r.ENROLLMENT_DATE), 4, 2) IN ('19', '20')
+                          THEN TRY_TO_DATE(
+                              SUBSTR(TRIM(r.ENROLLMENT_DATE), 4, 4) || '-' ||
+                              SUBSTR(TRIM(r.ENROLLMENT_DATE), 1, 2) || '-0' ||
+                              SUBSTR(TRIM(r.ENROLLMENT_DATE), 3, 1),
+                              'YYYY-MM-DD'
+                          ) END,
+                     CASE WHEN SUBSTR(TRIM(r.ENROLLMENT_DATE), 4, 2) IN ('19', '20')
+                          THEN TRY_TO_DATE(
+                              SUBSTR(TRIM(r.ENROLLMENT_DATE), 4, 4) || '-0' ||
+                              SUBSTR(TRIM(r.ENROLLMENT_DATE), 1, 1) || '-' ||
+                              SUBSTR(TRIM(r.ENROLLMENT_DATE), 2, 2),
+                              'YYYY-MM-DD'
+                          ) END
+                 )
+        END                                             AS ENROLLMENT_DATE_PARSED,
+        TRIM(r.ENROLLMENT_DATE)                           AS ENROLLMENT_DATE_RAW,
+
+        -- Last flight date: same intelligent multi-format parser
+        CASE
+            WHEN TRIM(r.LAST_FLIGHT_DATE) LIKE '____-__-__'
+                 THEN TRY_TO_DATE(TRIM(r.LAST_FLIGHT_DATE), 'YYYY-MM-DD')
+
+            WHEN LENGTH(TRIM(r.LAST_FLIGHT_DATE)) = 8 AND REGEXP_LIKE(TRIM(r.LAST_FLIGHT_DATE), '^[0-9]+$')
+                 THEN COALESCE(
+                     CASE WHEN SUBSTR(TRIM(r.LAST_FLIGHT_DATE), 1, 2) IN ('19', '20')
+                          THEN TRY_TO_DATE(TRIM(r.LAST_FLIGHT_DATE), 'YYYYMMDD') END,
+                     CASE WHEN SUBSTR(TRIM(r.LAST_FLIGHT_DATE), 5, 2) IN ('19', '20')
+                          THEN TRY_TO_DATE(TRIM(r.LAST_FLIGHT_DATE), 'MMDDYYYY') END
+                 )
+
+            WHEN LENGTH(TRIM(r.LAST_FLIGHT_DATE)) = 7 AND REGEXP_LIKE(TRIM(r.LAST_FLIGHT_DATE), '^[0-9]+$')
+                 THEN COALESCE(
+                     CASE WHEN TRY_TO_NUMBER(SUBSTR(TRIM(r.LAST_FLIGHT_DATE), 1, 2)) BETWEEN 1 AND 12
+                           AND SUBSTR(TRIM(r.LAST_FLIGHT_DATE), 4, 2) IN ('19', '20')
+                          THEN TRY_TO_DATE(
+                              SUBSTR(TRIM(r.LAST_FLIGHT_DATE), 4, 4) || '-' ||
+                              SUBSTR(TRIM(r.LAST_FLIGHT_DATE), 1, 2) || '-0' ||
+                              SUBSTR(TRIM(r.LAST_FLIGHT_DATE), 3, 1),
+                              'YYYY-MM-DD'
+                          ) END,
+                     CASE WHEN SUBSTR(TRIM(r.LAST_FLIGHT_DATE), 4, 2) IN ('19', '20')
+                          THEN TRY_TO_DATE(
+                              SUBSTR(TRIM(r.LAST_FLIGHT_DATE), 4, 4) || '-0' ||
+                              SUBSTR(TRIM(r.LAST_FLIGHT_DATE), 1, 1) || '-' ||
+                              SUBSTR(TRIM(r.LAST_FLIGHT_DATE), 2, 2),
+                              'YYYY-MM-DD'
+                          ) END
+                 )
+        END                                             AS LAST_FLIGHT_DATE_PARSED,
+        TRIM(r.LAST_FLIGHT_DATE)                          AS LAST_FLIGHT_DATE_RAW,
+        COALESCE(r.SOURCE_FILE, 'MEMBERS_FEED')           AS SOURCE_FILE,
+        COALESCE(r.LOAD_TS, CURRENT_TIMESTAMP())          AS LOAD_TS,
+        $ACTIVE_BATCH_ID                                AS BATCH_ID
+    FROM raw_filtered r
+    LEFT JOIN country_lookup lkp
+        ON UPPER(TRIM(r.COUNTRY)) = lkp.ALIAS
+    LEFT JOIN country_canonical pfx
+        ON lkp.ISO_ALPHA3 IS NULL
+       AND r.COUNTRY IS NOT NULL
+       AND LENGTH(TRIM(r.COUNTRY)) >= 3
+       AND (
+           STARTSWITH(pfx.CANONICAL_NAME, UPPER(TRIM(r.COUNTRY)))
+           OR STARTSWITH(UPPER(TRIM(r.COUNTRY)), pfx.CANONICAL_NAME)
+       )
 ),
 with_derived AS (
     SELECT
