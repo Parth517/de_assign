@@ -1,4 +1,4 @@
-﻿-- =============================================================================
+-- =============================================================================
 -- FILE: 05_validations/validations.sql
 -- LAYER: SILVER — run AFTER staging.sql, BEFORE target_tables.sql
 -- PURPOSE:
@@ -265,3 +265,19 @@ FROM (
 ORDER BY
     CASE SEVERITY WHEN 'CRITICAL' THEN 1 WHEN 'HIGH' THEN 2 WHEN 'WARNING' THEN 3 WHEN 'MEDIUM' THEN 4 WHEN 'LOW' THEN 5 ELSE 6 END,
     CHECK_CATEGORY, CHECK_NAME;
+
+
+-- =============================================================================
+-- 7. BATCH EXECUTION & RECONCILIATION SUMMARY
+-- =============================================================================
+-- Run this view to audit the overall batch load metrics and pass rates:
+SELECT * FROM STG.VW_BATCH_QUALITY_SUMMARY;
+
+-- Verify Enriched Redemptions Fact Table in Gold (Deliverable 4):
+SELECT
+    COUNT(*) AS TOTAL_REDEMPTION_FACT_ROWS,
+    COUNT(CASE WHEN MEMBER_NAME IS NOT NULL THEN 1 END) AS MATCHED_MEMBERS,
+    COUNT(CASE WHEN MEMBER_NAME IS NULL THEN 1 END)     AS UNMATCHED_ORPHAN_TXNS,
+    SUM(MILES_REDEEMED) AS TOTAL_MILES_REDEEMED
+FROM PROD.FACT_MEMBER_REDEMPTIONS;
+

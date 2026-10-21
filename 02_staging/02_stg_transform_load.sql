@@ -256,6 +256,21 @@ LEFT JOIN (
 WHERE s.IS_VALID = FALSE;
 
 
+-- ── 4b. BATCH AUDIT & QUALITY RECONCILIATION VIEW ─────────────────────────────
+-- Provides operational visibility into batch performance, pass rate, and quality metrics
+CREATE OR REPLACE VIEW STG.VW_BATCH_QUALITY_SUMMARY AS
+SELECT
+    COALESCE(s.BATCH_ID, 'TOTAL')                                               AS BATCH_ID,
+    COUNT(s.MEMBER_ID)                                                          AS TOTAL_RECORDS,
+    COUNT(CASE WHEN s.IS_VALID = TRUE THEN 1 END)                               AS VALID_RECORDS,
+    COUNT(CASE WHEN s.IS_VALID = FALSE THEN 1 END)                              AS REJECTED_RECORDS,
+    ROUND(COUNT(CASE WHEN s.IS_VALID = TRUE THEN 1 END) * 100.0 / NULLIF(COUNT(s.MEMBER_ID), 0), 2) AS PASS_PERCENTAGE,
+    MIN(s.LOAD_TS)                                                              AS BATCH_START_TIME,
+    MAX(s.LOAD_TS)                                                              AS BATCH_END_TIME
+FROM STG.STG_MEMBERS s
+GROUP BY GROUPING SETS ((s.BATCH_ID), ());
+
+
 
 -- ── 5. DYNAMIC COUNTRY TABLE CREATION & SPLIT (SILVER) ────────────────────────
 -- Transformation logic to split members into their per-country target tables,
