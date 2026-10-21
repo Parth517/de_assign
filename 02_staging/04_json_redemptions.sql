@@ -62,6 +62,13 @@ USING (
          ) m,
          LATERAL FLATTEN(INPUT => m.VALUE:redemptions) f
     WHERE (r.BATCH_ID = b.BATCH_ID OR r.BATCH_ID IS NULL OR b.BATCH_ID = 'DEFAULT_BATCH')
+    QUALIFY ROW_NUMBER() OVER (
+        PARTITION BY f.VALUE:txn_id::VARCHAR(50)
+        ORDER BY 
+            TRY_TO_DATE(m.VALUE:feed_date::VARCHAR, 'YYYYMMDD') DESC,
+            CASE WHEN f.VALUE:status::VARCHAR = 'COMPLETED' THEN 1 ELSE 2 END,
+            r.LOAD_TS DESC
+    ) = 1
 ) src
 ON tgt.TXN_ID = src.TXN_ID
 WHEN MATCHED AND (tgt.STATUS <> src.STATUS OR tgt.MILES_REDEEMED <> src.MILES_REDEEMED) THEN
@@ -70,7 +77,7 @@ WHEN MATCHED AND (tgt.STATUS <> src.STATUS OR tgt.MILES_REDEEMED <> src.MILES_RE
         tgt.MILES_REDEEMED = src.MILES_REDEEMED,
         tgt.FEED_DATE      = src.FEED_DATE,
         tgt.BATCH_ID       = src.BATCH_ID,
-        tgt.STG_LOAD_TS    = CURRENT_TIMESTAMP()
+        tgt.LOAD_TS        = CURRENT_TIMESTAMP()
 WHEN NOT MATCHED THEN
     INSERT (
         MEMBER_ID, FEED_DATE, TXN_ID, TXN_DATE, PARTNER, MILES_REDEEMED, STATUS,
@@ -80,3 +87,45 @@ WHEN NOT MATCHED THEN
         src.MEMBER_ID, src.FEED_DATE, src.TXN_ID, src.TXN_DATE, src.PARTNER, src.MILES_REDEEMED, src.STATUS,
         src.SOURCE_FILE, src.BATCH_ID
     );
+
+
+-- =============================================================================
+-- 3. JOINING REDEMPTIONS TO MEMBER PROFILE DATA (Assessment Deliverable 4)
+-- =============================================================================
+-- The assessment requires describing and demonstrating how redemption data
+-- joins back to member profile data.
+--
+-- DESIGN DECISIONS:
+-- 1. Grain: Each row represents one distinct redemption transaction (TXN_ID).
+-- 2. Join Key: MEMBER_ID.
+-- 3. Profile Version: Joins against the member's deduplicated valid profile
+--    to enrich transactions with Member Name, Tier, Country, State, Agent, and Age.
+-- =============================================================================
+
+SELECT 
+    r.TXN_ID,
+    r.TXN_DATE,
+    r.FEED_DATE,
+    r.PARTNER,
+    r.MILES_REDEEMED,
+    r.STATUS,
+    r.MEMBER_ID,
+    m.MEMBER_NAME,
+    m.TIER_CODE,
+    m.AGE,
+    m.STALE_MEMBER,
+    m.AGENT_NAME,
+    m.STATE,
+    m.COUNTRY AS MEMBER_COUNTRY,
+    m.IS_ACTIVE
+FROM STG.STG_REDEMPTIONS r
+LEFT JOIN (
+    SELECT *
+    FROM STG.STG_MEMBERS
+    WHERE IS_VALID = TRUE
+    QUALIFY ROW_NUMBER() OVER (
+        PARTITION BY MEMBER_ID 
+        ORDER BY COALESCE(LAST_FLIGHT_DATE, ENROLLMENT_DATE, LOAD_TS::DATE) DESC, LOAD_TS DESC
+    ) = 1
+) m ON r.MEMBER_ID = m.MEMBER_ID;
+

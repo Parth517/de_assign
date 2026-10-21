@@ -81,7 +81,13 @@ BEGIN
 
         -- Step 2: Incremental MERGE from Silver country table into Gold (Zero TRUNCATE)
         v_sql := 'MERGE INTO PROD.TABLE_' || v_country || ' tgt
-            USING STG.STG_MEMBERS_' || v_country || ' src
+            USING (
+                SELECT * FROM STG.STG_MEMBERS_' || v_country || '
+                QUALIFY ROW_NUMBER() OVER (
+                    PARTITION BY MEMBER_ID 
+                    ORDER BY START_DATE DESC, STG_LOAD_TS DESC
+                ) = 1
+            ) src
             ON tgt.MEMBER_ID = src.MEMBER_ID
             WHEN MATCHED AND (
                 tgt.IS_ACTIVE        <> src.IS_ACTIVE OR
@@ -164,7 +170,7 @@ CREATE TABLE IF NOT EXISTS PROD.FACT_MEMBER_REDEMPTIONS (
     STATE               VARCHAR(50),
     COUNTRY             VARCHAR(10)     COMMENT 'Member canonical 3-letter country',
     POST_CODE           NUMBER(5),
-    IS_ACTIVE    NUMBER(1)       COMMENT '1 if active, 0 if inactive/moved',
+    IS_ACTIVE           NUMBER(1)       COMMENT '1 if active, 0 if inactive/moved',
     -- Audit
     SOURCE_FILE         VARCHAR(500),
     BATCH_ID            VARCHAR(50),
@@ -188,6 +194,24 @@ USING (
             PARTITION BY MEMBER_ID 
             ORDER BY COALESCE(LAST_FLIGHT_DATE, ENROLLMENT_DATE, LOAD_TS::DATE) DESC, LOAD_TS DESC
         ) = 1
+    ),
+    dedup_redemptions AS (
+        SELECT
+            TXN_ID,
+            TXN_DATE,
+            FEED_DATE,
+            PARTNER,
+            MILES_REDEEMED,
+            STATUS,
+            MEMBER_ID,
+            SOURCE_FILE,
+            BATCH_ID,
+            LOAD_TS
+        FROM STG.STG_REDEMPTIONS
+        QUALIFY ROW_NUMBER() OVER (
+            PARTITION BY TXN_ID
+            ORDER BY FEED_DATE DESC, LOAD_TS DESC, CASE WHEN STATUS = 'COMPLETED' THEN 1 ELSE 2 END
+        ) = 1
     )
     SELECT
         r.TXN_ID,
@@ -208,7 +232,7 @@ USING (
         CASE WHEN m.IS_ACTIVE = 'A' OR m.IS_ACTIVE = '1' THEN 1 ELSE 0 END AS IS_ACTIVE,
         r.SOURCE_FILE,
         r.BATCH_ID
-    FROM STG.STG_REDEMPTIONS r
+    FROM dedup_redemptions r
     LEFT JOIN latest_member m
         ON r.MEMBER_ID = m.MEMBER_ID
 ) src
@@ -228,7 +252,7 @@ WHEN MATCHED THEN
         tgt.STATE            = src.STATE,
         tgt.COUNTRY          = src.COUNTRY,
         tgt.POST_CODE        = src.POST_CODE,
-        tgt.IS_ACTIVE = src.IS_ACTIVE,
+        tgt.IS_ACTIVE        = src.IS_ACTIVE,
         tgt.BATCH_ID         = src.BATCH_ID,
         tgt.LOADED_AT        = CURRENT_TIMESTAMP()
 WHEN NOT MATCHED THEN
