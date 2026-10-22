@@ -247,7 +247,7 @@
 
   - Deploy PROD.SP_LOAD_DYNAMIC_COUNTRY_TABLES to create and synchronize PROD.TABLE_<COUNTRY>
   - Configure clustering keys on (MEMBER_ID) for high-performance point lookups
-  - Implement non-destructive incremental MERGE updating member state without table truncation"
+  - Implement atomic TRUNCATE and bulk reload from Silver country master"
   ```
 
 ---
@@ -321,5 +321,4 @@
   - Add commit_plan.md outlining standard Conventional Commits strategy"
   ```
 
----
 

@@ -635,52 +635,20 @@ BEGIN
         v_sql := 'ALTER TABLE PROD.TABLE_' || v_country || ' ADD COLUMN IF NOT EXISTS POST_CODE NUMBER(5)';
         EXECUTE IMMEDIATE v_sql;
 
-        -- Step 6b: Incremental MERGE from Silver country table into Gold (Zero TRUNCATE)
-        v_sql := 'MERGE INTO PROD.TABLE_' || v_country || ' tgt
-            USING (
-                SELECT * FROM STG.STG_MEMBERS_' || v_country || '
-                QUALIFY ROW_NUMBER() OVER (
-                    PARTITION BY MEMBER_ID 
-                    ORDER BY START_DATE DESC, STG_LOAD_TS DESC
-                ) = 1
-            ) src
-            ON tgt.MEMBER_ID = src.MEMBER_ID
-            WHEN MATCHED AND (
-                tgt.IS_ACTIVE        <> src.IS_ACTIVE OR
-                COALESCE(tgt.END_DATE, ''1900-01-01'') <> COALESCE(src.END_DATE, ''1900-01-01'') OR
-                tgt.TIER_CODE        <> src.TIER_CODE OR
-                COALESCE(tgt.LAST_FLIGHT_DATE, ''1900-01-01'') <> COALESCE(src.LAST_FLIGHT_DATE, ''1900-01-01'') OR
-                COALESCE(tgt.POST_CODE, 0) <> COALESCE(src.POST_CODE, 0)
-            ) THEN
-                UPDATE SET
-                    tgt.MEMBER_NAME      = src.MEMBER_NAME,
-                    tgt.TIER_CODE        = src.TIER_CODE,
-                    tgt.DOB              = src.DOB,
-                    tgt.ENROLLMENT_DATE  = src.ENROLLMENT_DATE,
-                    tgt.LAST_FLIGHT_DATE = src.LAST_FLIGHT_DATE,
-                    tgt.AGE              = src.AGE,
-                    tgt.STALE_MEMBER     = src.STALE_MEMBER,
-                    tgt.AGENT_NAME       = src.AGENT_NAME,
-                    tgt.STATE            = src.STATE,
-                    tgt.POST_CODE        = src.POST_CODE,
-                    tgt.IS_ACTIVE        = src.IS_ACTIVE,
-                    tgt.MEMBER_TYPE      = src.MEMBER_TYPE,
-                    tgt.START_DATE       = src.START_DATE,
-                    tgt.END_DATE         = src.END_DATE,
-                    tgt.SOURCE_FILE      = src.SOURCE_FILE,
-                    tgt.BATCH_ID         = src.BATCH_ID,
-                    tgt.LOADED_AT        = CURRENT_TIMESTAMP()
-            WHEN NOT MATCHED THEN
-                INSERT (
-                    MEMBER_ID, MEMBER_NAME, TIER_CODE, DOB, ENROLLMENT_DATE, LAST_FLIGHT_DATE,
-                    AGE, STALE_MEMBER, AGENT_NAME, STATE, COUNTRY, POST_CODE, IS_ACTIVE, MEMBER_TYPE,
-                    START_DATE, END_DATE, SOURCE_FILE, BATCH_ID, LOADED_AT
-                )
-                VALUES (
-                    src.MEMBER_ID, src.MEMBER_NAME, src.TIER_CODE, src.DOB, src.ENROLLMENT_DATE, src.LAST_FLIGHT_DATE,
-                    src.AGE, src.STALE_MEMBER, src.AGENT_NAME, src.STATE, src.COUNTRY, src.POST_CODE,
-                    src.IS_ACTIVE, src.MEMBER_TYPE, src.START_DATE, src.END_DATE, src.SOURCE_FILE, src.BATCH_ID, CURRENT_TIMESTAMP()
-                )';
+        -- Step 6b: Atomic Truncate and Reload from Silver country master
+        v_sql := 'TRUNCATE TABLE PROD.TABLE_' || v_country;
+        EXECUTE IMMEDIATE v_sql;
+
+        v_sql := 'INSERT INTO PROD.TABLE_' || v_country || ' (
+            MEMBER_ID, MEMBER_NAME, TIER_CODE, DOB, ENROLLMENT_DATE, LAST_FLIGHT_DATE,
+            AGE, STALE_MEMBER, AGENT_NAME, STATE, COUNTRY, POST_CODE, IS_ACTIVE, MEMBER_TYPE,
+            START_DATE, END_DATE, SOURCE_FILE, BATCH_ID, LOADED_AT
+        )
+        SELECT 
+            MEMBER_ID, MEMBER_NAME, TIER_CODE, DOB, ENROLLMENT_DATE, LAST_FLIGHT_DATE,
+            AGE, STALE_MEMBER, AGENT_NAME, STATE, COUNTRY, POST_CODE, IS_ACTIVE, MEMBER_TYPE,
+            START_DATE, END_DATE, SOURCE_FILE, BATCH_ID, CURRENT_TIMESTAMP()
+        FROM STG.STG_MEMBERS_' || v_country;
         EXECUTE IMMEDIATE v_sql;
 
         v_count := v_count + 1;
@@ -722,6 +690,14 @@ CREATE TABLE IF NOT EXISTS PROD.FACT_MEMBER_REDEMPTIONS (
 CLUSTER BY (TXN_DATE, MEMBER_ID)
 COMMENT = 'Gold: Production fact table joining partner airline redemptions with member profiles';
 
+-- 6c. Purge any corrupted, invalid, or orphan transactions that may have leaked into the Gold mart
+DELETE FROM PROD.FACT_MEMBER_REDEMPTIONS 
+WHERE MILES_REDEEMED <= 0 
+   OR STATUS NOT IN ('COMPLETED', 'PENDING', 'CANCELLED')
+   OR TXN_DATE > CURRENT_DATE() 
+   OR TXN_DATE IS NULL
+   OR MEMBER_NAME IS NULL;
+
 MERGE INTO PROD.FACT_MEMBER_REDEMPTIONS tgt
 USING (
     WITH latest_member AS (
@@ -749,6 +725,10 @@ USING (
             BATCH_ID,
             LOAD_TS
         FROM STG.STG_REDEMPTIONS
+        WHERE MILES_REDEEMED > 0
+          AND STATUS IN ('COMPLETED', 'PENDING', 'CANCELLED')
+          AND TXN_DATE IS NOT NULL
+          AND TXN_DATE <= CURRENT_DATE()
         QUALIFY ROW_NUMBER() OVER (
             PARTITION BY TXN_ID
             ORDER BY FEED_DATE DESC, LOAD_TS DESC, CASE WHEN STATUS = 'COMPLETED' THEN 1 ELSE 2 END
@@ -776,6 +756,7 @@ USING (
     FROM dedup_redemptions r
     LEFT JOIN latest_member m
         ON r.MEMBER_ID = m.MEMBER_ID
+    WHERE m.MEMBER_ID IS NOT NULL
 ) src
 ON tgt.TXN_ID = src.TXN_ID
 WHEN MATCHED THEN

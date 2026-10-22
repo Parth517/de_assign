@@ -180,6 +180,14 @@ CREATE TABLE IF NOT EXISTS PROD.FACT_MEMBER_REDEMPTIONS (
 CLUSTER BY (TXN_DATE, MEMBER_ID)
 COMMENT = 'Gold: Production fact table joining partner airline redemptions with member profiles';
 
+-- 6c. Purge any corrupted, invalid, or orphan transactions that may have leaked into the Gold mart
+DELETE FROM PROD.FACT_MEMBER_REDEMPTIONS 
+WHERE MILES_REDEEMED <= 0 
+   OR STATUS NOT IN ('COMPLETED', 'PENDING', 'CANCELLED')
+   OR TXN_DATE > CURRENT_DATE() 
+   OR TXN_DATE IS NULL
+   OR MEMBER_NAME IS NULL;
+
 -- Idempotent MERGE into FACT_MEMBER_REDEMPTIONS
 MERGE INTO PROD.FACT_MEMBER_REDEMPTIONS tgt
 USING (
@@ -208,6 +216,10 @@ USING (
             BATCH_ID,
             LOAD_TS
         FROM STG.STG_REDEMPTIONS
+        WHERE MILES_REDEEMED > 0
+          AND STATUS IN ('COMPLETED', 'PENDING', 'CANCELLED')
+          AND TXN_DATE IS NOT NULL
+          AND TXN_DATE <= CURRENT_DATE()
         QUALIFY ROW_NUMBER() OVER (
             PARTITION BY TXN_ID
             ORDER BY FEED_DATE DESC, LOAD_TS DESC, CASE WHEN STATUS = 'COMPLETED' THEN 1 ELSE 2 END
@@ -235,6 +247,7 @@ USING (
     FROM dedup_redemptions r
     LEFT JOIN latest_member m
         ON r.MEMBER_ID = m.MEMBER_ID
+    WHERE m.MEMBER_ID IS NOT NULL
 ) src
 ON tgt.TXN_ID = src.TXN_ID
 WHEN MATCHED THEN
